@@ -113,3 +113,21 @@ xbox-family-gift/
 
 ### 已验证
 本地桩测（模拟微软真实 grant/orders 请求体）**8/8 通过**：`capture_ids` 正确记录两套 ID，`swap_payment` 在 `purchases/grant` 与 `orderLineItems[]` 上把 productId/skuId/availabilityId 全部替换为内购，非付款请求不动。
+
+### 八补充：真实 HAR 实测校准（2026-11，已对齐真实字段）
+
+抓包文件覆盖了完整流程（子号加游戏→加金币→发起→主号 safety 审批→付款）。实测结论：
+
+- **加购顺序**：先游戏 `9P36PB4N42GW`(COD MW4 $69.99) → 后金币 `9N1Q2GBW6LP0`(5000 COD Points $39.99)。`capture_ids` 依次记 `idsGame`、`idsIAP`。
+- **主号在 family safety 的审批动作** = `POST https://account.microsoft.com/family/api/buy/requests/approve`
+  body: `{"onBehalfOfPuid","orderId","productId","skuId"}` —— **productId 就是游戏**，这是必须替换的第一现场。
+- **确认购买页(iframe)** = `POST https://www.microsoft.com/store/purchase/buynowui/buynow`，form 里 `products=[{"productId","skuId","availabilityId"}]`。
+- **子号下单** = `POST https://purchase.md.mp.microsoft.com/v7.0/users/me/orders`，`items[].productId/skuId/availabilityId`。
+
+`swap_payment.js` 已改为**精确命中**这三处（approve 的 JSON、buynow 的 `products=` 表单、orders 的 `items[]`），并保留 `purchases/grant` 兼容。用真实报文做本地桩测 **10/10 通过**：
+
+- `approve`：productId→金币、skuId→金币、orderId 保持不变 ✅
+- `buynow`：`products=` 里 productId/availabilityId→金币（URL 编码正确处理）✅
+- `orders`：`items[0].productId/availabilityId`→金币 ✅
+
+> 注意：真实链路里**主号 approve + buynow 两步**是"safety 里最终付款"的落点，脚本在这两步把商品换成金币。实际是否成功仍取决于服务端对该订单的最终校验（订单 orderId 仍对应原游戏，服务端可能校验一致性）；此脚本最大化打通前端参数，需实机跑一次确认到账。
