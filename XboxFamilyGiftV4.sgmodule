@@ -1,0 +1,13 @@
+#!name=Xbox家庭组内购送礼 v4
+#!desc=加购采集→子号发起→主号批准→safety付款阶段(orders+product详情+buynow)一致换内购
+#!category=Xbox
+#!homepage=https://github.com/theslugger/xbox-family-gift
+#!version=4.0.0-eb7e8c7
+
+[MITM]
+hostname = %APPEND% cart.production.store-web.dynamics.com, buynow.production.store-web.dynamics.com, purchase.md.mp.microsoft.com, account.microsoft.com, www.microsoft.com, mobileaggregator.family.microsoft.com, emerald.xboxservices.com, store-images.s-microsoft.com, *.store-web.dynamics.com, *.mp.microsoft.com, *.microsoft.com, *.dynamics.com
+
+[Script]
+gift_capture = type=http-request, pattern=^https://cart\.production\.store-web\.dynamics\.com/v\d+\.\d+/cart/(loadCart|addItems|add), requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/eb7e8c7/gift-swap/capture_ids.js
+gift_approve = type=http-request, pattern=^https://account\.microsoft\.com/family/api/buy/requests/approve, requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/eb7e8c7/gift-swap/approve_flag.js
+gift_swap = type=http-request, pattern=^(https://purchase\.md\.mp\.microsoft\.com/v\d+\.\d+/users/me/orders|https://account\.microsoft\.com/family/api/product\?|https://www\.microsoft\.com/store/purchase/buynowui/buynow), requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/eb7e8c7/gift-swap/swap_payment.js
