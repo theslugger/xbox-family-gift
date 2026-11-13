@@ -82,6 +82,14 @@ function swapForm(text, game, iap) {
   var isGrant  = /purchase\.mp\.microsoft\.com\/v\d+\.\d+\/purchases\/grant/.test(url);
   if (!(isOrders || isBuynow || isGrant)) { $done({}); return; }
 
+  // ⚠️ 时序门控: 只能"主号批准之后"才替换。子号发起购买时(approve 之前)一律放行。
+  var approved = $persistentStore.read("approvedTime");
+  if (!approved) {
+    // 尚未批准 -> 不动，且不弹窗(避免子号发起时误触发)
+    $done({});
+    return;
+  }
+
   var game = load(GAME_KEY), iap = load(IAP_KEY);
   if (!game || !iap) { $notification.post("未替换", "缺少 idsGame/idsIAP", "请先加购: 游戏→内购"); $done({}); return; }
   var body = $request.body;
