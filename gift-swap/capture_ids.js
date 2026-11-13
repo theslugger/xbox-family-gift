@@ -63,17 +63,22 @@ function collectItems(body) {
       // 第①次：记为游戏
       $persistentStore.write(JSON.stringify(ids), GAME_KEY);
       game = ids; changed = true;
+      console.log("XBOX-FAMILY: ①游戏ID已记录 " + JSON.stringify(ids));
       $notification.post("①【游戏】已记录", ids.productId + (ids._name ? " · " + ids._name : ""),
         "sku:" + ids.skuId + "｜此单为掩护(家庭审批对象)");
     } else if (!iap) {
       // 第②次：记为内购
       $persistentStore.write(JSON.stringify(ids), IAP_KEY);
       iap = ids; changed = true;
+      console.log("XBOX-FAMILY: ②内购ID已记录 " + JSON.stringify(ids));
       $notification.post("②【内购】已记录", ids.productId + (ids._name ? " · " + ids._name : ""),
         "sku:" + ids.skuId + "｜付款时替换为此");
     }
     if (game && iap) break;
   }
+
+  // 每次都日志，便于在"最近请求"里确认脚本是否命中(无论是否首采)
+  console.log("XBOX-FAMILY: loadCart 命中, items=" + items.length + " game=" + (game && game.productId) + " iap=" + (iap && iap.productId));
 
   $done({});
 })();
