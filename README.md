@@ -131,3 +131,15 @@ xbox-family-gift/
 - `orders`：`items[0].productId/availabilityId`→金币 ✅
 
 > 注意：真实链路里**主号 approve + buynow 两步**是"safety 里最终付款"的落点，脚本在这两步把商品换成金币。实际是否成功仍取决于服务端对该订单的最终校验（订单 orderId 仍对应原游戏，服务端可能校验一致性）；此脚本最大化打通前端参数，需实机跑一次确认到账。
+
+### 八补充2：时机修正（v1.2）——只在"确认购买页点【购买】"时换
+
+真实 HAR 复核：主号 family safety 审批后进入"确认购买"页，**再点【购买】**才发出真正结算请求。替换点收敛为：
+
+- ✅ `POST purchase.md.mp.microsoft.com/v*/users/me/orders`（建单，`items[].productId/skuId/availabilityId` 换成内购；orderId/beneficiary 保持）
+- ✅ `POST www.microsoft.com/store/purchase/buynowui/buynow`（`products=` 表单换内购）
+- ✅ `POST purchase.mp.microsoft.com/v*/purchases/grant`（如出现）
+- ❌ **不再碰** `account.microsoft.com/family/api/buy/requests/approve`（只是核准登记）
+- ❌ **不再碰** `cart.../loadCart`（子号加购）
+
+用真实报文桩测 7/7 通过：orders 换商品但保 orderId/受益人；buynow products 换；**approve 原样不动**、loadCart 不动。

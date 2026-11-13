@@ -2,7 +2,7 @@
 #!desc=子号对游戏发起家庭组购买→主号family safety审批(approve)→付款页/下单时把游戏ID换成内购, 实付内购
 #!category=Xbox
 #!homepage=https://github.com/theslugger/xbox-family-gift
-#!version=1.1.0
+#!version=1.2.0
 
 # ============================================================
 # 玩法顺序(HAR 实测链路):
@@ -27,5 +27,5 @@ hostname = %APPEND% *.microsoft.com, *.dynamics.com, account.microsoft.com
 # 采集两套 ID (加购请求)
 gift_capture = type=http-request, pattern=^https://cart\.production\.store-web\.dynamics\.com/v\d+\.\d+/cart/(loadCart|addItems|add), requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/gift-swap/capture_ids.js
 
-# 付款/审批阶段换 ID：approve + buynow + orders + grant
-gift_swap = type=http-request, pattern=^(https://account\.microsoft\.com/family/api/buy/requests/approve|https://www\.microsoft\.com/store/purchase/buynowui/buynow|https://purchase\.md\.mp\.microsoft\.com/v\d+\.\d+/users/me/orders|https://purchase\.mp\.microsoft\.com/v\d+\.\d+/purchases/grant), requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/gift-swap/swap_payment.js
+# 仅"确认购买页点【购买】"时换 ID：orders(建单) + buynow(products) + grant。approve/loadCart 不碰
+gift_swap = type=http-request, pattern=^(https://purchase\.md\.mp\.microsoft\.com/v\d+\.\d+/users/me/orders|https://www\.microsoft\.com/store/purchase/buynowui/buynow|https://purchase\.mp\.microsoft\.com/v\d+\.\d+/purchases/grant), requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/gift-swap/swap_payment.js
