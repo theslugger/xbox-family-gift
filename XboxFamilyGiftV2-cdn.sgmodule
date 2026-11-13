@@ -1,0 +1,24 @@
+#!name=Xbox家庭组内购送礼 v2
+#!desc=子号加购(游戏/内购)→子号发起→主号safety批准→safety确认购买页buynow替换为内购
+#!category=Xbox
+#!homepage=https://github.com/theslugger/xbox-family-gift
+#!version=2.0.0-7308d1f
+
+# 流程:
+#   1) 子号 加购【游戏】        -> 弹「①【游戏】已记录」
+#   2) 子号 加购【内购/金币】    -> 弹「②【内购】已记录」
+#   3) 子号 对【游戏】点购买发起  -> RequestParentalApproval (不替换)
+#   4) 主号 family safety 批准    -> 弹「✅ 已批准」
+#   5) 主号 safety 确认购买页 buynow(AMCFamilySafetyApp/parentApproval)
+#      -> 只把 products= 换成内购, 弹「✅ safety购买页已替换为内购」
+#   * orders / approve / 子号buynow(XboxCom) 一律不替换
+
+[MITM]
+hostname = %APPEND% *.microsoft.com, *.dynamics.com, account.microsoft.com
+
+[Script]
+gift_capture = type=http-request, pattern=^https://cart\.production\.store-web\.dynamics\.com/v\d+\.\d+/cart/(loadCart|addItems|add), requires-body=1, max-size=0, timeout=90, script-path=https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@7308d1f/gift-swap/capture_ids.js
+
+gift_approve = type=http-request, pattern=^https://account\.microsoft\.com/family/api/buy/requests/approve, requires-body=1, max-size=0, timeout=90, script-path=https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@7308d1f/gift-swap/approve_flag.js
+
+gift_swap = type=http-request, pattern=^https://www\.microsoft\.com/store/purchase/buynowui/buynow, requires-body=1, max-size=0, timeout=90, script-path=https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@7308d1f/gift-swap/swap_payment.js
