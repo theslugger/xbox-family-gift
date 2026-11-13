@@ -1,51 +1,45 @@
 /**
  * ============================================================
- * capture_ids.js —— 采集"游戏"与"内购"两套商品 ID
+ * capture_ids.js —— 采集"游戏"与"内购"两套商品 ID（每次命中都弹窗）
  * ------------------------------------------------------------
  * 玩法(游戏掩护 + 付款换内购):
- *   1) 子号先把【游戏】加入购物车/发起家庭组购买 -> 本脚本记为 idsGame
- *   2) 子号再把【内购(金币)】加入购物车            -> 本脚本记为 idsIAP
- *   3) 主号在 family safety 审批"游戏"通过
- *   4) 走到付款时 swap_payment.js 把付款请求里的商品 ID 全换成 idsIAP
- *      -> 实付内购的钱, 子号拿到内购; 家庭安全审批的是游戏(掩护)。
+ *   1) 子号加购【游戏】   -> 记 idsGame，弹窗【第①次·游戏】
+ *   2) 子号加购【内购】   -> 记 idsIAP ，弹窗【第②次·内购】
+ *   3) 主号 family safety 审批游戏通过
+ *   4) 确认购买页点【购买】-> swap_payment 把商品 ID 换成内购
  *
- * 触发: http-request (加购/发起购买), requires-body=1
- *   pattern: ^https://cart\.production\.store-web\.dynamics\.com/v\d+\.\d+/cart/loadCart
- *   （购物车 add 也会走 loadCart 或 addItems，视客户端而定，可再加一条）
+ * 弹窗规则（你要的）:
+ *   - 第一次采集到的新商品 -> 记为游戏，弹 "①游戏已记录"
+ *   - 第二次采集到的不同商品 -> 记为内购，弹 "②内购已记录"
+ *   - 之后重复出现相同商品 -> 不再重复弹（避免刷屏）
+ *   - 若想重置：在本地存储删掉 idsGame / idsIAP 即可
  *
- * 取值: 请求体 itemsToAdd.items[0] 的 productId/availabilityId/skuId。
- *   第一次采集到 -> 存 "idsGame" (游戏)
- *   之后若出现不同商品 -> 存 "idsIAP" (内购)
- *
- * 手动覆盖: 若自动判定顺序不可靠，可直接在本地存储里手写
- *   idsGame / idsIAP (格式见下)，本脚本第 2 次起不再覆盖。
+ * 取值: 遍历请求体 itemsToAdd.items（或 items），逐条处理。
  * ============================================================
  */
 
 var GAME_KEY = "idsGame";
 var IAP_KEY = "idsIAP";
 
-function extractIds(body) {
-  var o;
-  try { o = JSON.parse(body); } catch (e) { return null; }
-  if (!o) return null;
+function loadIds(k) { try { var v = $persistentStore.read(k); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
+function sameId(a, b) { return a && b && a.productId === b.productId && a.skuId === b.skuId; }
 
-  // 常见: itemsToAdd.items[0]
-  var cand = null;
-  if (o.itemsToAdd && o.itemsToAdd.items && o.itemsToAdd.items.length) cand = o.itemsToAdd.items[0];
-  else if (Array.isArray(o.items) && o.items.length) cand = o.items[0];
-  else if (o.itemsToAdd && o.itemsToAdd.items) cand = null;
-
-  if (!cand) return null;
-  var pid = cand.productId || cand.ProductId;
-  var aid = cand.availabilityId || cand.AvailabilityId;
-  var sid = cand.skuId || cand.SkuId;
-  if (!pid || !sid) return null; // availabilityId 有时缺，允许空
-  return { productId: pid, availabilityId: aid || "", skuId: sid };
-}
-
-function sameId(a, b) {
-  return a && b && a.productId === b.productId && a.skuId === b.skuId;
+function collectItems(body) {
+  var o; try { o = JSON.parse(body); } catch (e) { return []; }
+  if (!o) return [];
+  var arr = null;
+  if (o.itemsToAdd && Array.isArray(o.itemsToAdd.items)) arr = o.itemsToAdd.items;
+  else if (Array.isArray(o.items)) arr = o.items;
+  if (!arr) return [];
+  var out = [];
+  for (var i = 0; i < arr.length; i++) {
+    var it = arr[i] || {};
+    var pid = it.productId || it.ProductId;
+    var sid = it.skuId || it.SkuId;
+    var aid = it.availabilityId || it.AvailabilityId || "";
+    if (pid && sid) out.push({ productId: pid, availabilityId: aid, skuId: sid, _name: it.title || it.productTitle || "" });
+  }
+  return out;
 }
 
 (function () {
@@ -53,22 +47,33 @@ function sameId(a, b) {
   if ((($request.method || "").toUpperCase()) === "OPTIONS") { $done({}); return; }
   if (!$request.body) { $done({}); return; }
 
-  var ids = extractIds($request.body);
-  if (!ids) { $done({}); return; }
+  var items = collectItems($request.body);
+  if (!items.length) { $done({}); return; }
 
-  var game = null, iap = null;
-  try { game = JSON.parse($persistentStore.read(GAME_KEY)); } catch (e) {}
-  try { iap  = JSON.parse($persistentStore.read(IAP_KEY)); } catch (e) {}
+  var game = loadIds(GAME_KEY);
+  var iap = loadIds(IAP_KEY);
+  var changed = false;
 
-  if (!game) {
-    $persistentStore.write(JSON.stringify(ids), GAME_KEY);
-    $notification.post("已记录【游戏】ID", ids.productId, "sku:" + ids.skuId + " (此单为掩护, 家庭审批对象)");
-    $done({});
-    return;
+  for (var i = 0; i < items.length; i++) {
+    var ids = items[i];
+    if (game && sameId(game, ids)) continue;       // 已是游戏，跳过
+    if (iap && sameId(iap, ids)) continue;          // 已是内购，跳过
+
+    if (!game) {
+      // 第①次：记为游戏
+      $persistentStore.write(JSON.stringify(ids), GAME_KEY);
+      game = ids; changed = true;
+      $notification.post("①【游戏】已记录", ids.productId + (ids._name ? " · " + ids._name : ""),
+        "sku:" + ids.skuId + "｜此单为掩护(家庭审批对象)");
+    } else if (!iap) {
+      // 第②次：记为内购
+      $persistentStore.write(JSON.stringify(ids), IAP_KEY);
+      iap = ids; changed = true;
+      $notification.post("②【内购】已记录", ids.productId + (ids._name ? " · " + ids._name : ""),
+        "sku:" + ids.skuId + "｜付款时替换为此");
+    }
+    if (game && iap) break;
   }
-  if (!sameId(game, ids) && (!iap || !sameId(iap, ids))) {
-    $persistentStore.write(JSON.stringify(ids), IAP_KEY);
-    $notification.post("已记录【内购】ID", ids.productId, "sku:" + ids.skuId + " (付款时将替换为此)");
-  }
+
   $done({});
 })();
