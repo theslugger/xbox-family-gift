@@ -1,34 +1,27 @@
 /**
  * ============================================================
- * capture_ids.js —— 采集"游戏"与"内购"两套商品 ID（每次命中都弹窗）
+ * capture_ids.js —— 采集"游戏"与"内购"商品三件套(productId/skuId/availabilityId)
  * ------------------------------------------------------------
- * 玩法(游戏掩护 + 付款换内购):
- *   1) 子号加购【游戏】   -> 记 idsGame，弹窗【第①次·游戏】
- *   2) 子号加购【内购】   -> 记 idsIAP ，弹窗【第②次·内购】
- *   3) 主号 family safety 审批游戏通过
- *   4) 确认购买页点【购买】-> swap_payment 把商品 ID 换成内购
+ * 关键修复(v8):
+ *   - 之前用"if(!game)/if(!iap)"才记录, 导致本地一旦存了脏数据(旧 availabilityId)
+ *     就永远不再更新 -> 付款时换成错的 availabilityId -> 订单 404。
+ *   - 现改为: 每次加购 loadCart 命中, 都用【本次请求里的真实 availabilityId】
+ *     覆盖存储(同 productId 也更新), 保证三件套永远是最新的真值。
+ *   - 每次命中都弹窗(Surge $notification.post), 显示 avail, 便于核对。
  *
- * 弹窗规则（你要的）:
- *   - 第一次采集到的新商品 -> 记为游戏，弹 "①游戏已记录"
- *   - 第二次采集到的不同商品 -> 记为内购，弹 "②内购已记录"
- *   - 之后重复出现相同商品 -> 不再重复弹（避免刷屏）
- *   - 若想重置：在本地存储删掉 idsGame / idsIAP 即可
- *
- * 取值: 遍历请求体 itemsToAdd.items（或 items），逐条处理。
+ * 识别游戏 vs 内购: 按出现顺序, 第1个不同商品=游戏, 第2个不同商品=内购。
  * ============================================================
  */
 
 var GAME_KEY = "idsGame";
 var IAP_KEY = "idsIAP";
 
-// 兼容 Surge / Quantumult X / Shadowrocket 的弹窗
 function notify(title, subtitle, body) {
-  // 仅 Surge: $notification.post
   try { $notification.post(title, subtitle || "", body || ""); } catch (e) {}
 }
-
 function loadIds(k) { try { var v = $persistentStore.read(k); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
-function sameId(a, b) { return a && b && a.productId === b.productId && a.skuId === b.skuId; }
+function sameProduct(a, b) { return a && b && a.productId === b.productId; }
+function fullId(a) { return a && a.productId && a.availabilityId && a.skuId; }
 
 function collectItems(body) {
   var o; try { o = JSON.parse(body); } catch (e) { return []; }
@@ -58,33 +51,47 @@ function collectItems(body) {
 
   var game = loadIds(GAME_KEY);
   var iap = loadIds(IAP_KEY);
-  var changed = false;
 
   for (var i = 0; i < items.length; i++) {
     var ids = items[i];
-    if (game && sameId(game, ids)) continue;       // 已是游戏，跳过
-    if (iap && sameId(iap, ids)) continue;          // 已是内购，跳过
 
-    if (!game) {
-      // 第①次：记为游戏
-      $persistentStore.write(JSON.stringify(ids), GAME_KEY);
-      game = ids; changed = true;
-      console.log("XBOX-FAMILY: ①游戏ID已记录 " + JSON.stringify(ids));
-      notify("①【游戏】已记录", ids.productId + (ids._name ? " · " + ids._name : ""),
-        "avail:" + ids.availabilityId + " sku:" + ids.skuId);
-    } else if (!iap) {
-      // 第②次：记为内购
-      $persistentStore.write(JSON.stringify(ids), IAP_KEY);
-      iap = ids; changed = true;
-      console.log("XBOX-FAMILY: ②内购ID已记录 " + JSON.stringify(ids));
-      notify("②【内购】已记录", ids.productId + (ids._name ? " · " + ids._name : ""),
-        "avail:" + ids.availabilityId + " sku:" + ids.skuId);
+    // 1) 与已存"游戏"同 productId -> 用本次真实 availabilityId 覆盖(修脏数据), 弹①
+    if (game && sameProduct(game, ids)) {
+      if (!fullId(game) || game.availabilityId !== ids.availabilityId || game.skuId !== ids.skuId) {
+        $persistentStore.write(JSON.stringify(ids), GAME_KEY);
+        game = ids;
+        notify("①【游戏】ID已更新", ids.productId, "avail:" + ids.availabilityId + " sku:" + ids.skuId);
+      } else {
+        notify("①【游戏】命中", ids.productId, "avail:" + ids.availabilityId);
+      }
+      continue;
     }
-    if (game && iap) break;
+    // 2) 与已存"内购"同 productId -> 覆盖, 弹②
+    if (iap && sameProduct(iap, ids)) {
+      if (!fullId(iap) || iap.availabilityId !== ids.availabilityId || iap.skuId !== ids.skuId) {
+        $persistentStore.write(JSON.stringify(ids), IAP_KEY);
+        iap = ids;
+        notify("②【内购】ID已更新", ids.productId, "avail:" + ids.availabilityId + " sku:" + ids.skuId);
+      } else {
+        notify("②【内购】命中", ids.productId, "avail:" + ids.availabilityId);
+      }
+      continue;
+    }
+
+    // 3) 全新商品
+    if (!game) {
+      $persistentStore.write(JSON.stringify(ids), GAME_KEY);
+      game = ids;
+      notify("①【游戏】已记录", ids.productId + (ids._name ? " · " + ids._name : ""), "avail:" + ids.availabilityId + " sku:" + ids.skuId);
+    } else if (!iap) {
+      $persistentStore.write(JSON.stringify(ids), IAP_KEY);
+      iap = ids;
+      notify("②【内购】已记录", ids.productId + (ids._name ? " · " + ids._name : ""), "avail:" + ids.availabilityId + " sku:" + ids.skuId);
+    }
   }
 
-  // 每次都日志，便于在"最近请求"里确认脚本是否命中(无论是否首采)
-  console.log("XBOX-FAMILY: loadCart 命中, items=" + items.length + " game=" + (game && game.productId) + " iap=" + (iap && iap.productId));
+  console.log("XBOX-FAMILY: loadCart命中 items=" + items.length +
+    " game=" + JSON.stringify(game) + " iap=" + JSON.stringify(iap));
 
   $done({});
 })();
