@@ -1,0 +1,45 @@
+#!name=Xbox 家庭组内购送礼(Game 伪装)
+#!desc=内购Consumable伪装成Game, 走家庭组赠送通道; 改低价区; 采集购物车并替换送礼项
+#!category=Xbox
+#!homepage=https://github.com/theslugger/xbox-family-gift
+#!icon=https://www.xbox.com/favicon.ico
+#!author=<YOUR_NAME>
+#!version=1.0.0
+
+# ============================================================
+# 使用前:
+#   1) 把下面 BASE 换成你的托管直链前缀(脚本需 no-confuse 的原始 .js)
+#      BASE = https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/scripts
+#   2) 按需修改各脚本内的 ONLY_PRODUCT_IDS / MARKET / 伪装名称等
+#   3) 在 Surge 中开启 MITM 并安装信任证书
+# ============================================================
+
+[General]
+# 如果你只想让脚本作用于微软域名，可在此不收全局；脚本已自行限定 URL
+
+[MITM]
+hostname = %APPEND% *.microsoft.com, *.dynamics.com, displaycatalog.mp.microsoft.com
+
+[Script]
+# --- ① 改低价区(请求进入 cart 时) ---
+xbox_ng_market = type=http-request, pattern=^https://cart\.production\.store-web\.dynamics\.com/v\d+\.\d+/cart/loadCart, requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/scripts/ngmarket.js
+
+# --- ② 采集 cartId / lineItemId(响应回来时) ---
+xbox_get_cart = type=http-response, pattern=^https://cart\.production\.store-web\.dynamics\.com/v\d+\.\d+/cart/loadCart, requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/scripts/getcartv2.js
+
+# --- ③【核心】把内购 Consumable 伪装成 Game(商品/目录响应) ---
+# 建议在 displaycatalog + 加购详情响应上启用；如误伤可在脚本内用 ONLY_PRODUCT_IDS 限定
+xbox_dlc2game = type=http-response, pattern=^https://(displaycatalog\.mp\.microsoft\.com|storeedgefd\.dynamics\.com|cart\.production\.store-web\.dynamics\.com)/, requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/scripts/dlc2game.js
+
+# --- ④ 伪造家庭组审批弹窗(pendingRequests) ---
+xbox_dlc2 = type=http-response, pattern=^https://.+\.(microsoft|dynamics)\.com/.+pendingRequests, requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/scripts/dlc2.js
+
+# --- ⑤ 伪装展示名/图标/价格(可选, 仅视觉) ---
+xbox_name = type=http-response, pattern=^https://displaycatalog\.mp\.microsoft\.com/, requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/scripts/name.js
+
+# --- ⑥ 送礼/家庭组/批量更新: 替换 cartId 与 lineItemId ---
+xbox_getgift = type=http-request, pattern=^https://cart\.production\.store-web\.dynamics\.com/v\d+\.\d+/cart/(?!loadCart), requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/scripts/getgift.js
+
+[URL Rewrite]
+# 可选：把购买页强制打到低价区(如需仅换页面 market). 按需启用：
+# ^https://www\.microsoft\.com/store/purchase/purchaseui/(cart|checkout)\?.*market=[^&]* https://www.microsoft.com/store/purchase/purchaseui/$1?market=NG 302
