@@ -68,16 +68,9 @@ function swapOne(o, g, t) {
     return;
   }
 
-  // ===== 2) 付款页商品详情: family/api/product?bigId=游戏/sku =====
-  if (/account\.microsoft\.com\/family\/api\/product\?/.test(url) && /bigId=/.test(url)) {
-    var newBig = t.productId + "/" + (t.skuId || g.skuId);
-    var newUrl = url.replace(/bigId=[^&]+/, "bigId=" + q(newBig));
-    if (newUrl !== url) {
-      $notification.post("✅ 付款页商品详情指向内购", newBig, "名称/图将显示内购");
-      $done({ url: newUrl });
-    } else $done({});
-    return;
-  }
+  // ===== 2) family/api/product 是【审批页展示】= 必须保持游戏, 绝不替换 =====
+  //   (V4 曾把这里改成内购, 导致审批页变成"充值金币", 主号批准的不是游戏 -> 错误)
+  //   直接放行, 不处理。
 
   // ===== 3) 确认购买页 buynow (仅 safety) =====
   if (/www\.microsoft\.com\/store\/purchase\/buynowui\/buynow/.test(url)) {
