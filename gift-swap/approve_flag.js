@@ -10,6 +10,12 @@
  *   pattern: ^https://account\.microsoft\.com/family/api/buy/requests/approve
  * ============================================================
  */
+
+function notify(title, subtitle, body) {
+  try { if (typeof $notification !== "undefined" && $notification.post) notify(title, subtitle || "", body || ""); } catch (e) {}
+  try { if (typeof $notify !== "undefined") $notify(title, subtitle || "", body || ""); } catch (e) {}
+}
+
 (function () {
   if (typeof $request === "undefined" || !$request) { $done({}); return; }
   if ((($request.method || "").toUpperCase()) !== "POST") { $done({}); return; }
@@ -17,6 +23,6 @@
   if (url.indexOf("/family/api/buy/requests/approve") === -1) { $done({}); return; }
 
   $persistentStore.write(String(Date.now()), "approvedTime");
-  $notification.post("✅ 已批准", "进入最终付款阶段", "此后 orders 将被替换为内购");
+  notify("✅ 已批准", "进入最终付款阶段", "此后 orders 将被替换为内购");
   $done({});
 })();

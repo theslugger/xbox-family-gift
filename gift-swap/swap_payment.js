@@ -21,6 +21,12 @@
  * ============================================================
  */
 
+
+function notify(title, subtitle, body) {
+  try { if (typeof $notification !== "undefined" && $notification.post) notify(title, subtitle || "", body || ""); } catch (e) {}
+  try { if (typeof $notify !== "undefined") $notify(title, subtitle || "", body || ""); } catch (e) {}
+}
+
 var GAME_KEY = "idsGame";
 var IAP_KEY = "idsIAP";
 function load(k) { try { return JSON.parse($persistentStore.read(k)); } catch (e) { return null; } }
@@ -48,7 +54,7 @@ function swapOne(o, g, t) {
   var g = load(GAME_KEY), t = load(IAP_KEY);
   if (!g || !t) { $done({}); return; }
   if (!t.availabilityId) {
-    $notification.post("⚠️ 内购 availabilityId 缺失", "请重新加购内购以采集", "当前只有 productId=" + t.productId);
+    notify("⚠️ 内购 availabilityId 缺失", "请重新加购内购以采集", "当前只有 productId=" + t.productId);
     // 仍继续(尽量替换 productId)
   }
 
@@ -63,7 +69,7 @@ function swapOne(o, g, t) {
       if (x.productId === g.productId) n += swapOne(x, g, t);
       for (var k in x) if (Object.prototype.hasOwnProperty.call(x, k)) walk(x[k]);
     })(o);
-    if (n > 0) { $notification.post("✅ 订单商品已换内购", t.productId, "字段:" + n); $done({ body: JSON.stringify(o) }); }
+    if (n > 0) { notify("✅ 订单商品已换内购", t.productId, "字段:" + n); $done({ body: JSON.stringify(o) }); }
     else $done({});
     return;
   }
@@ -96,7 +102,7 @@ function swapOne(o, g, t) {
       if (k === "products") parts.push(p.slice(0, i) + "=" + q(JSON.stringify(arr)));
       else parts.push(p);
     });
-    $notification.post("✅ safety购买页已换内购", t.productId + " · sku " + t.skuId, "字段:" + cn);
+    notify("✅ safety购买页已换内购", t.productId + " · sku " + t.skuId, "字段:" + cn);
     $done({ body: parts.join("&") });
     return;
   }
