@@ -12,8 +12,8 @@
  */
 
 function notify(title, subtitle, body) {
-  try { if (typeof $notification !== "undefined" && $notification.post) notify(title, subtitle || "", body || ""); } catch (e) {}
-  try { if (typeof $notify !== "undefined") $notify(title, subtitle || "", body || ""); } catch (e) {}
+  // 仅 Surge: $notification.post
+  try { $notification.post(title, subtitle || "", body || ""); } catch (e) {}
 }
 
 (function () {

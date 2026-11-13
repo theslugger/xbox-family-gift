@@ -23,8 +23,8 @@
 
 
 function notify(title, subtitle, body) {
-  try { if (typeof $notification !== "undefined" && $notification.post) notify(title, subtitle || "", body || ""); } catch (e) {}
-  try { if (typeof $notify !== "undefined") $notify(title, subtitle || "", body || ""); } catch (e) {}
+  // 仅 Surge: $notification.post
+  try { $notification.post(title, subtitle || "", body || ""); } catch (e) {}
 }
 
 var GAME_KEY = "idsGame";
@@ -33,14 +33,20 @@ function load(k) { try { return JSON.parse($persistentStore.read(k)); } catch (e
 function q(s) { return encodeURIComponent(s); }
 function unq(s) { try { return decodeURIComponent(s); } catch (e) { return s; } }
 
+// 一致性替换：只有当能拿到内购的【完整三件套】(productId+availabilityId) 时才替换，
+// 否则宁可不换，避免出现"金币productId+游戏availabilityId"这种非法组合(会导致 404)。
 function swapOne(o, g, t) {
-  // 一致替换: productId 命中游戏 -> 内购; sku 命中 -> 内购; avail 命中游戏或为空 -> 内购
   var n = 0;
-  if (o.productId === g.productId) { o.productId = t.productId; n++; }
-  if (o.skuId !== undefined && g.skuId && o.skuId === g.skuId && t.skuId) { o.skuId = t.skuId; n++; }
-  if (o.availabilityId !== undefined) {
-    if ((g.availabilityId && o.availabilityId === g.availabilityId) || o.availabilityId === "") {
-      if (t.availabilityId) { o.availabilityId = t.availabilityId; n++; }
+  var hasFullIAP = t.productId && t.availabilityId;
+  if (o.productId === g.productId) {
+    if (hasFullIAP) {
+      o.productId = t.productId;
+      if (o.availabilityId !== undefined) o.availabilityId = t.availabilityId;
+      if (o.skuId !== undefined && t.skuId) o.skuId = t.skuId;
+      n++;
+    } else {
+      // 缺 availabilityId -> 拒绝替换, 防止 404
+      return 0;
     }
   }
   return n;

@@ -23,9 +23,8 @@ var IAP_KEY = "idsIAP";
 
 // 兼容 Surge / Quantumult X / Shadowrocket 的弹窗
 function notify(title, subtitle, body) {
-  try { if (typeof $notification !== "undefined" && $notification.post) $notification.post(title, subtitle || "", body || ""); } catch (e) {}
-  try { if (typeof $notify !== "undefined") $notify(title, subtitle || "", body || ""); } catch (e) {}
-  try { if (typeof $notification !== "undefined" && $notification.post === undefined && typeof $notification === "function") $notification(title, subtitle || "", body || ""); } catch (e) {}
+  // 仅 Surge: $notification.post
+  try { $notification.post(title, subtitle || "", body || ""); } catch (e) {}
 }
 
 function loadIds(k) { try { var v = $persistentStore.read(k); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
@@ -72,14 +71,14 @@ function collectItems(body) {
       game = ids; changed = true;
       console.log("XBOX-FAMILY: ①游戏ID已记录 " + JSON.stringify(ids));
       notify("①【游戏】已记录", ids.productId + (ids._name ? " · " + ids._name : ""),
-        "sku:" + ids.skuId + "｜此单为掩护(家庭审批对象)");
+        "avail:" + ids.availabilityId + " sku:" + ids.skuId);
     } else if (!iap) {
       // 第②次：记为内购
       $persistentStore.write(JSON.stringify(ids), IAP_KEY);
       iap = ids; changed = true;
       console.log("XBOX-FAMILY: ②内购ID已记录 " + JSON.stringify(ids));
       notify("②【内购】已记录", ids.productId + (ids._name ? " · " + ids._name : ""),
-        "sku:" + ids.skuId + "｜付款时替换为此");
+        "avail:" + ids.availabilityId + " sku:" + ids.skuId);
     }
     if (game && iap) break;
   }
