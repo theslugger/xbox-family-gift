@@ -88,3 +88,28 @@ xbox-family-gift/
 ## 七、为什么不直接用 `script.js/modify.js`（换商品 ID 那版）
 
 那版是"购物车里把 A 商品 ID 换成 B 商品 ID"，属于**直接购买**链路的串货；它**不改变商品类型**，因此**不会让内购出现家庭组赠送入口**，做不了"送内购"。本方案针对你的目标，核心是 `dlc2game.js`（改类型）+ `dlc2.js`（改审批弹窗）+ `getgift.js`（对齐购物车项）。
+
+---
+
+## 八、【游戏掩护 + 付款换内购】版（GiftSwap）
+
+> 适用场景：微软家庭组只能送 Game。此版让**子号对"游戏"发起家庭组购买 → 主号在 family safety 审批"游戏" → 付款/授权请求时把商品 ID 换成内购**，实现"审批的是游戏、实付/入库的是内购"。
+
+**与第七节的 dlc2game 版区别：** dlc2game 是"把内购伪装成 Game 让它直接可送"；GiftSwap 是"用游戏做掩护过审，付款时偷换成内购"。按你的真实链路，用 **GiftSwap 这套**。
+
+文件：`gift-swap/capture_ids.js`、`gift-swap/swap_payment.js`、`GiftSwap.sgmodule`、`GiftSwap-shadowrocket.conf`
+
+### 操作顺序
+1. **子号加购【游戏】** → `capture_ids` 记 `idsGame`（通知会显示"已记录【游戏】ID"）。
+2. **子号加购【内购/金币】** → 记 `idsIAP`（"已记录【内购】ID"）。
+3. **子号对【游戏】发起家庭组购买** → 生成待审批订单（family safety 里出现待批准项）。
+4. **主号在 family safety 审批该【游戏】通过**。
+5. 走到**付款/授权**（`purchases/grant`、`users/me/orders`、`buynow`、`checkout`）→ `swap_payment` 把请求里 `productId/skuId/availabilityId`（含 `orderLineItems[]`）全换成内购 → **实付内购的钱、子号入库内购**。
+
+### 关键前提
+- 子号必须开启"购买需家长审批"；家长号与子号在同一家庭组。
+- **两步加购顺序不能反**：先游戏、后内购（否则 `idsGame/idsIAP` 记反）。
+- 若自动顺序记反了，直接编辑本地存储：`idsGame` / `idsIAP` 各写一份 `{"productId":"...","availabilityId":"...","skuId":"..."}`。
+
+### 已验证
+本地桩测（模拟微软真实 grant/orders 请求体）**8/8 通过**：`capture_ids` 正确记录两套 ID，`swap_payment` 在 `purchases/grant` 与 `orderLineItems[]` 上把 productId/skuId/availabilityId 全部替换为内购，非付款请求不动。

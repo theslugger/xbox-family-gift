@@ -1,0 +1,25 @@
+#!name=Xbox 家庭组-游戏掩护付款换内购
+#!desc=子号对游戏发起家庭组购买→主号family safety审批→付款时把商品ID换成内购, 实付内购
+#!category=Xbox
+#!homepage=https://github.com/theslugger/xbox-family-gift
+#!version=1.0.0
+
+# ============================================================
+# 玩法顺序:
+#   1) 子号 加购【游戏】        -> capture_ids 记 idsGame
+#   2) 子号 加购【内购/金币】    -> capture_ids 记 idsIAP
+#   3) 子号 对【游戏】发起家庭组购买 -> 生成待审批订单
+#   4) 主号 在 family safety 审批该【游戏】通过
+#   5) 走到付款/授权请求 -> swap_payment 把商品ID换成内购 -> 实付内购
+# 前提: 子号开启"购买需家长审批"; 家长号/子号在同一家庭组
+# ============================================================
+
+[MITM]
+hostname = %APPEND% *.microsoft.com, *.dynamics.com
+
+[Script]
+# 采集两套 ID (请求进入购物车 add/loadCart 时)
+gift_capture = type=http-request, pattern=^https://cart\.production\.store-web\.dynamics\.com/v\d+\.\d+/cart/(loadCart|addItems|add), requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/gift-swap/capture_ids.js
+
+# 付款/授权阶段换 ID (grant / orders / buynow / checkout)
+gift_swap = type=http-request, pattern=^(https://purchase\.mp\.microsoft\.com/v\d+\.\d+/(purchases/grant|users/me/orders)|https://www\.microsoft\.com/store/purchase/buynowui/buynow|https://checkout\.microsoft\.com/), requires-body=1, max-size=0, timeout=90, script-path=https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/gift-swap/swap_payment.js
