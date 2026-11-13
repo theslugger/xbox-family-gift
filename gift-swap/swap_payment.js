@@ -1,22 +1,23 @@
 /**
  * ============================================================
- * swap_payment.js —— 只在【主号 family safety 确认购买页】的 buynow 替换
+ * swap_payment.js —— 主号 family safety 付款阶段：把整条链一致换成内购
  * ------------------------------------------------------------
- * 精确特征(来自真实 HAR 2026-11):
- *   主号在 family safety 批准(approve)后进入"确认购买"页，
- *   此时发出的 buynow 请求带有:
- *     callerApplicationId = AMCFamilySafetyApp
- *     scenario            = parentApproval
- *     Origin              = https://account.microsoft.com
- *     products            = [{"productId","skuId","availabilityId"}]  <- 游戏
+ * 报错 "something went wrong" 的根因(真实 HAR 2026-11 验证):
+ *   只换 buynow 的 productId，但 availabilityId 仍是游戏的,
+ *   且付款页商品详情(#family/api/product bigId=游戏) 仍显示游戏名/图,
+ *   订单(orders)也是游戏 -> 订单/展示/购买三者不一致 => 服务端报错。
  *
- *   子号发起购买/普通购买页的 buynow 是 callerApplicationId=XboxCom，
- *   不会被本脚本替换（避免"子号发起就替换"）。
+ * 所以必须在【主号 safety 付款阶段】把三处一起、且一致地换成内购:
+ *   1) 收款建单:  POST purchase.md.mp.microsoft.com/vX.Y/users/me/orders
+ *                 body.items[].productId/skuId/availabilityId -> 内购
+ *   2) 付款页商品详情: GET account.microsoft.com/family/api/product?bigId=<游戏>/<sku>
+ *                 URL 里 bigId -> 内购/<内购sku>  (名称/图片才会变成内购的)
+ *   3) 确认购买页: POST www.microsoft.com/store/purchase/buynowui/buynow
+ *                 form products=[{productId,skuId,availabilityId}] -> 内购
+ *                 (仅 callerApplicationId=AMCFamilySafetyApp / scenario=parentApproval)
  *
- * 替换动作: 把该 buynow 的 products= 里的 productId/skuId/availabilityId
- *          换成内购(idsIAP)。仅此一处，其它请求一律放行。
- *
- * 数据: 本地存储 idsGame / idsIAP（capture_ids.js 采集）
+ * 不碰: 子号 RequestParentalApproval / loadCart / approve 本身
+ * 数据: 本地 idsGame / idsIAP(含 productId+availabilityId+skuId)
  * ============================================================
  */
 
@@ -26,15 +27,17 @@ function load(k) { try { return JSON.parse($persistentStore.read(k)); } catch (e
 function q(s) { return encodeURIComponent(s); }
 function unq(s) { try { return decodeURIComponent(s); } catch (e) { return s; } }
 
-function parseForm(text) {
-  var d = {};
-  var parts = text.split("&");
-  for (var i = 0; i < parts.length; i++) {
-    var idx = parts[i].indexOf("=");
-    if (idx < 0) continue;
-    d[unq(parts[i].slice(0, idx))] = parts[i].slice(idx + 1); // 保留原编码的 value
+function swapOne(o, g, t) {
+  // 一致替换: productId 命中游戏 -> 内购; sku 命中 -> 内购; avail 命中游戏或为空 -> 内购
+  var n = 0;
+  if (o.productId === g.productId) { o.productId = t.productId; n++; }
+  if (o.skuId !== undefined && g.skuId && o.skuId === g.skuId && t.skuId) { o.skuId = t.skuId; n++; }
+  if (o.availabilityId !== undefined) {
+    if ((g.availabilityId && o.availabilityId === g.availabilityId) || o.availabilityId === "") {
+      if (t.availabilityId) { o.availabilityId = t.availabilityId; n++; }
+    }
   }
-  return d;
+  return n;
 }
 
 (function () {
@@ -42,60 +45,68 @@ function parseForm(text) {
   if ((($request.method || "").toUpperCase()) === "OPTIONS") { $done({}); return; }
   var url = $request.url || "";
 
-  // 只处理 buynow 确认购买页
-  if (!/www\.microsoft\.com\/store\/purchase\/buynowui\/buynow/.test(url)) { $done({}); return; }
-
-  var body = $request.body;
-  if (!body) { $done({}); return; }
-
-  var d = parseForm(body);
-
-  // ===== 关键判定：必须是主号 family safety 的购买页 =====
-  var caller = d["callerApplicationId"] ? unq(d["callerApplicationId"]) : "";
-  var scenario = d["scenario"] ? unq(d["scenario"]) : "";
-  if (caller !== "AMCFamilySafetyApp" && scenario !== "parentApproval") {
-    // 子号/普通购买页(XboxCom) -> 不替换
-    $done({}); return;
+  var g = load(GAME_KEY), t = load(IAP_KEY);
+  if (!g || !t) { $done({}); return; }
+  if (!t.availabilityId) {
+    $notification.post("⚠️ 内购 availabilityId 缺失", "请重新加购内购以采集", "当前只有 productId=" + t.productId);
+    // 仍继续(尽量替换 productId)
   }
 
-  // 读取 ids
-  var game = load(GAME_KEY), iap = load(IAP_KEY);
-  if (!game || !iap) {
-    $notification.post("未替换", "缺少 idsGame/idsIAP", "请先加购: 游戏→内购");
-    $done({}); return;
+  // ===== 1) 收款建单 orders =====
+  if (/purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders/.test(url)) {
+    var body = $request.body; if (!body) { $done({}); return; }
+    var o; try { o = JSON.parse(body); } catch (e) { $done({}); return; }
+    var n = 0;
+    (function walk(x) {
+      if (x === null || typeof x !== "object") return;
+      if (Array.isArray(x)) { x.forEach(walk); return; }
+      if (x.productId === g.productId) n += swapOne(x, g, t);
+      for (var k in x) if (Object.prototype.hasOwnProperty.call(x, k)) walk(x[k]);
+    })(o);
+    if (n > 0) { $notification.post("✅ 订单商品已换内购", t.productId, "字段:" + n); $done({ body: JSON.stringify(o) }); }
+    else $done({});
+    return;
   }
 
-  // products= 解析
-  if (d["products"] === undefined) { $done({}); return; }
-  var arr;
-  try { arr = JSON.parse(unq(d["products"])); } catch (e) { $done({}); return; }
-  if (!Array.isArray(arr)) { $done({}); return; }
-
-  var changed = 0;
-  for (var i = 0; i < arr.length; i++) {
-    var it = arr[i] || {};
-    if (it.productId === game.productId) { it.productId = iap.productId; changed++; }
-    if (game.skuId && it.skuId === game.skuId) { it.skuId = iap.skuId; changed++; }
-    if (game.availabilityId && iap.availabilityId && it.availabilityId === game.availabilityId) {
-      it.availabilityId = iap.availabilityId; changed++;
-    }
-  }
-  if (changed === 0) { $done({}); return; }
-
-  // 重建 body（只替换 products 字段，其它原样）
-  var newParts = [];
-  var parts = body.split("&");
-  for (var j = 0; j < parts.length; j++) {
-    var idx2 = parts[j].indexOf("=");
-    if (idx2 < 0) { newParts.push(parts[j]); continue; }
-    var k = unq(parts[j].slice(0, idx2));
-    if (k === "products") {
-      newParts.push(parts[j].slice(0, idx2) + "=" + q(JSON.stringify(arr)));
-    } else {
-      newParts.push(parts[j]);
-    }
+  // ===== 2) 付款页商品详情: family/api/product?bigId=游戏/sku =====
+  if (/account\.microsoft\.com\/family\/api\/product\?/.test(url) && /bigId=/.test(url)) {
+    var newBig = t.productId + "/" + (t.skuId || g.skuId);
+    var newUrl = url.replace(/bigId=[^&]+/, "bigId=" + q(newBig));
+    if (newUrl !== url) {
+      $notification.post("✅ 付款页商品详情指向内购", newBig, "名称/图将显示内购");
+      $done({ url: newUrl });
+    } else $done({});
+    return;
   }
 
-  $notification.post("✅ safety购买页已替换为内购", iap.productId + " · sku " + iap.skuId, "场景: parentApproval");
-  $done({ body: newParts.join("&") });
+  // ===== 3) 确认购买页 buynow (仅 safety) =====
+  if (/www\.microsoft\.com\/store\/purchase\/buynowui\/buynow/.test(url)) {
+    var b2 = $request.body; if (!b2) { $done({}); return; }
+    // 解析 form
+    var d = {};
+    b2.split("&").forEach(function (p) {
+      var i = p.indexOf("="); if (i < 0) return;
+      d[unq(p.slice(0, i))] = p.slice(i + 1);
+    });
+    var caller = d["callerApplicationId"] ? unq(d["callerApplicationId"]) : "";
+    var scen = d["scenario"] ? unq(d["scenario"]) : "";
+    if (caller !== "AMCFamilySafetyApp" && scen !== "parentApproval") { $done({}); return; } // 子号不碰
+    if (d["products"] === undefined) { $done({}); return; }
+    var arr; try { arr = JSON.parse(unq(d["products"])); } catch (e) { $done({}); return; }
+    if (!Array.isArray(arr)) { $done({}); return; }
+    var cn = 0; arr.forEach(function (it) { cn += swapOne(it, g, t); });
+    if (cn === 0) { $done({}); return; }
+    var parts = [];
+    b2.split("&").forEach(function (p) {
+      var i = p.indexOf("="); if (i < 0) { parts.push(p); return; }
+      var k = unq(p.slice(0, i));
+      if (k === "products") parts.push(p.slice(0, i) + "=" + q(JSON.stringify(arr)));
+      else parts.push(p);
+    });
+    $notification.post("✅ safety购买页已换内购", t.productId + " · sku " + t.skuId, "字段:" + cn);
+    $done({ body: parts.join("&") });
+    return;
+  }
+
+  $done({});
 })();
