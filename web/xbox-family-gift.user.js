@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.5.0
+// @version      3.6.0
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。GM存储跨域共享 + unsafeWindow劫持页面真实请求
 // @author       theslugger
 // @match        https://www.xbox.com/*
@@ -497,6 +497,87 @@
       return origSend.call(this, body);
     };
   }
+
+
+  // ============================================================
+  // 表单提交 hook —— buynow 是 <form target=iframe> 的 document 级 POST，
+  // fetch/XHR 都拦不到，必须在 submit 前改写 products 字段
+  // HAR 证据：_resourceType=document, sec-fetch-dest=iframe, accel 由主页面表单发起
+  // ============================================================
+  function isBuynowAction(act) {
+    return /\/store\/purchase\/buynowui\/buynow/i.test(String(act || ''));
+  }
+
+  // 从 form 里读出所有字段，重组 body，替换 products 后写回
+  function patchBuynowForm(form) {
+    try {
+      if (!form || !isBuynowAction(form.action)) return 0;
+      const g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+      if (!g || !t || !t.productId || !t.availabilityId) return 0;
+
+      // 找 products 输入框
+      let inp = null;
+      for (let i = 0; i < form.elements.length; i++) {
+        const el = form.elements[i];
+        if (el && el.name === 'products') { inp = el; break; }
+      }
+      if (!inp) return 0;
+
+      // 取 market 字段做 availabilityId 对齐
+      let mk = '';
+      for (let i = 0; i < form.elements.length; i++) {
+        const el = form.elements[i];
+        if (el && el.name === 'market') { mk = String(el.value || '').toUpperCase(); break; }
+      }
+      let tt = t;
+      if (mk) tt = alignAvail(t, mk);
+
+      let arr;
+      try { arr = JSON.parse(inp.value); } catch (e) { return 0; }
+      if (!Array.isArray(arr)) return 0;
+      let n = 0;
+      arr.forEach(it => { n += swapOne(it, g, tt); });
+      if (!n) return 0;
+
+      inp.value = JSON.stringify(arr);
+      log('✅ buynow 表单已改写', arr);
+      notify('✅ safety付款页已换内购', tt.productId + ' · sku ' + tt.skuId, 'market ' + (mk || '?'));
+      return n;
+    } catch (e) { log('patchBuynowForm err', e); return 0; }
+  }
+
+  // 兜底：所有 form 在 submit / requestSubmit 前统一检查
+  const HForm = PAGE.HTMLFormElement;
+  if (HForm && HForm.prototype) {
+    const origSubmit = HForm.prototype.submit;
+    HForm.prototype.submit = function () {
+      try { patchBuynowForm(this); } catch (e) {}
+      return origSubmit.apply(this, arguments);
+    };
+    if (HForm.prototype.requestSubmit) {
+      const origRS = HForm.prototype.requestSubmit;
+      HForm.prototype.requestSubmit = function () {
+        try { patchBuynowForm(this); } catch (e) {}
+        return origRS.apply(this, arguments);
+      };
+    }
+  }
+
+  // 兜底 2：监听 submit 事件（捕获阶段），覆盖 el.submit() 之外的所有路径
+  try {
+    PAGE.addEventListener('submit', function (ev) {
+      try { patchBuynowForm(ev.target); } catch (e) {}
+    }, true);
+  } catch (e) {}
+
+  // 兜底 3：定时巡检 —— 主页面可能直接 .submit() 而不触发 submit 事件
+  // 同时处理「iframe 已存在但表单还没填好」的时序
+  setInterval(function () {
+    try {
+      const forms = PAGE.document ? PAGE.document.querySelectorAll('form') : [];
+      for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
+    } catch (e) {}
+  }, 1500);
 
   // ============================================================
   // 菜单
