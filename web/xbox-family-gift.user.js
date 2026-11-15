@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.4.0
+// @version      3.5.0
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。GM存储跨域共享 + unsafeWindow劫持页面真实请求
 // @author       theslugger
 // @match        https://www.xbox.com/*
@@ -337,11 +337,17 @@
     bodyStr.split('&').forEach(p => { const i = p.indexOf('='); if (i < 0) return; d[unq(p.slice(0, i))] = p.slice(i + 1); });
     const caller = d['callerApplicationId'] ? unq(d['callerApplicationId']) : '';
     const scen = d['scenario'] ? unq(d['scenario']) : '';
-    if (caller !== 'AMCFamilySafetyApp' && scen !== 'parentApproval') return null;
+    // 实测值可能是 AMCFamilySafetyApp / AMCFamilySafetyWeb，统一按前缀匹配
+    const isFamilySafety = /^AMCFamilySafety/i.test(caller) || scen === 'parentApproval';
+    if (!isFamilySafety) return null;
     if (d['products'] === undefined) return null;
     let arr; try { arr = JSON.parse(unq(d['products'])); } catch (e) { return null; }
     if (!Array.isArray(arr)) return null;
-    let cn = 0; arr.forEach(it => { cn += swapOne(it, g, t); });
+    // buynow 的 market 参数决定目录查询市场；内购 availabilityId 需与之对齐
+    const formMarket = d['market'] ? unq(d['market']).toUpperCase() : '';
+    let tt = t;
+    if (formMarket && t && t.productId) tt = alignAvail(t, formMarket);
+    let cn = 0; arr.forEach(it => { cn += swapOne(it, g, tt); });
     if (!cn) return null;
     const parts = bodyStr.split('&').map(p => {
       const i = p.indexOf('='); if (i < 0) return p;
