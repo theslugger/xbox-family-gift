@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.2.0
+// @version      3.3.0
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。GM存储跨域共享 + unsafeWindow劫持页面真实请求
 // @author       theslugger
 // @match        https://www.xbox.com/*
@@ -102,6 +102,8 @@
           '<button id="xfg-test" style="flex:1;padding:5px;background:#1a2a3a;color:#9cf;border:1px solid #246;border-radius:6px;cursor:pointer">自检</button>' +
         '<button id="xfg-export" style="flex:1;padding:5px;background:#222;color:#ff0;border:1px solid #444;border-radius:6px;cursor:pointer">导出</button>' +
         '<button id="xfg-import" style="flex:1;padding:5px;background:#222;color:#0ff;border:1px solid #444;border-radius:6px;cursor:pointer">导入</button>' +
+        '<button id="xfg-swap" style="flex:1;padding:5px;background:#2a1a3a;color:#c9f;border:1px solid #536;border-radius:6px;cursor:pointer">交换①②</button>' +
+        '<button id="xfg-manual" style="flex:1;padding:5px;background:#2a2a1a;color:#ff9;border:1px solid #553;border-radius:6px;cursor:pointer">手动指定</button>' +
         '</div>' +
       '</div>';
     document.documentElement.appendChild(panelEl);
@@ -128,6 +130,23 @@
       try { navigator.clipboard.writeText(txt); } catch (e) {}
       prompt('已复制。到另一页面点【导入】粘贴：', txt);
     });
+    panelEl.querySelector('#xfg-swap').addEventListener('click', function () {
+      var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+      if (!g || !t) { panelAdd('①② 需要都有值才能交换'); return; }
+      store.set(KEY_GAME, t); store.set(KEY_IAP, g);
+      panelAdd('已交换 ①游戏 ↔ ②内购');
+      refreshPanel();
+    });
+    panelEl.querySelector('#xfg-manual').addEventListener('click', function () {
+      var raw = prompt('手动指定【内购】，格式 productId/availabilityId/skuId（例：9N1Q2GBW6LP0/B21NVMHMJ32K/0010）：');
+      if (!raw) return;
+      var parts = raw.split('/');
+      if (parts.length < 2) { panelAdd('格式错误，需要 productId/availabilityId[/skuId]'); return; }
+      var obj = { productId: parts[0].trim(), availabilityId: parts[1].trim(), skuId: (parts[2] || '0010').trim() };
+      store.set(KEY_IAP, obj);
+      panelAdd('已手动指定内购: ' + obj.productId + ' / ' + obj.availabilityId);
+      refreshPanel();
+    });
     panelEl.querySelector('#xfg-import').addEventListener('click', function () {
       var raw = prompt('粘贴导出的 JSON：');
       if (!raw) return;
@@ -149,8 +168,8 @@
     if (!st) return;
     var g = store.get(KEY_GAME), t = store.get(KEY_IAP), lk = store.get(KEY_LOCK);
     st.innerHTML =
-      '<div>① 游戏: <b style="color:#7fd">' + (g ? g.productId + '<br><span style="color:#888">avail ' + g.availabilityId + ' sku ' + g.skuId + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
-      '<div style="margin-top:4px">② 内购: <b style="color:#7fd">' + (t ? t.productId + '<br><span style="color:#888">avail ' + t.availabilityId + ' sku ' + t.skuId + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
+      '<div>① 游戏: <b style="color:#7fd">' + (g ? g.productId + '<br><span style="color:#888">avail ' + g.availabilityId + ' sku ' + g.skuId + (g.market ? ' · market ' + g.market : '') + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
+      '<div style="margin-top:4px">② 内购: <b style="color:#7fd">' + (t ? t.productId + '<br><span style="color:#888">avail ' + t.availabilityId + ' sku ' + t.skuId + (t.market ? ' · market ' + t.market : '') + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
       '<div style="margin-top:4px">状态: ' + (lk ? '<b style="color:#ff0">🔒 已锁定</b>' : '<span style="color:#888">采集中</span>') + '</div>';
   }
 
@@ -161,6 +180,7 @@
   function collectItems(bodyStr) {
     let o; try { o = JSON.parse(bodyStr); } catch (e) { return []; }
     if (!o) return [];
+    var mk = o.market || '', lc = o.locale || '';
     let arr = null;
     if (o.itemsToAdd && Array.isArray(o.itemsToAdd.items)) arr = o.itemsToAdd.items;
     else if (Array.isArray(o.items)) arr = o.items;
@@ -171,7 +191,7 @@
       const pid = it && (it.productId || it.ProductId);
       const sid = it && (it.skuId || it.SkuId);
       const aid = it && (it.availabilityId || it.AvailabilityId || '');
-      if (pid && sid) out.push({ productId: pid, availabilityId: aid, skuId: sid });
+      if (pid && sid) out.push({ productId: pid, availabilityId: aid, skuId: sid, market: mk, locale: lc });
     }
     return out;
   }
@@ -184,8 +204,29 @@
     handleCaptureItems(items);
   }
 
-  function handleCaptureItems(items) {
+  /**
+   * 与 Surge 版 script.js 语义对齐：
+   *   Surge 取请求体 itemsToAdd.items[0] —— 即"本次加购的那一个商品"
+   *   网页版：
+   *     - 优先用请求体 itemsToAdd.items[0]（source='request'）
+   *     - 退而用响应体 lineItems，但仅当【只有 1 个商品】时才认为是本次加购（source='response'）
+   *     - 多个商品时不猜顺序，避免把游戏错记成内购
+   */
+  function handleCaptureItems(items, source) {
     if (!items || !items.length) return;
+
+    if (source === 'response' && items.length > 1) {
+      // 多商品购物车：不猜，只做命中提示
+      var g0 = store.get(KEY_GAME), t0 = store.get(KEY_IAP);
+      for (var k = 0; k < items.length; k++) {
+        var it0 = items[k];
+        if (g0 && sameProduct(g0, it0)) panelAdd('命中①游戏 ' + it0.productId);
+        else if (t0 && sameProduct(t0, it0)) panelAdd('命中②内购 ' + it0.productId);
+      }
+      refreshPanel();
+      return;
+    }
+
     let game = store.get(KEY_GAME), iap = store.get(KEY_IAP);
     const locked = store.get(KEY_LOCK);
 
@@ -239,6 +280,17 @@
   function swapOrdersJson(bodyStr, g, t) {
     let o; try { o = JSON.parse(bodyStr); } catch (e) { return null; }
     let n = 0;
+    // 市场必须与内购 ID 所属市场一致，否则 DisplayCatalog 404
+    var mk = (t && t.market) ? String(t.market).toUpperCase() : '';
+    if (mk && o.market && o.market.toUpperCase() !== mk) {
+      o.market = mk;
+      n++;
+    }
+    var lc = (t && t.locale) ? String(t.locale) : '';
+    if (lc && o.language && /^[a-z]{2}-[a-z]{2}$/i.test(lc) && o.language.toLowerCase() !== lc.toLowerCase()) {
+      o.language = lc;
+      n++;
+    }
     (function walk(x) {
       if (x === null || typeof x !== 'object') return;
       if (Array.isArray(x)) { x.forEach(walk); return; }
@@ -304,6 +356,15 @@
   // ============================================================
   // 从【响应体】采集（最可靠：loadCart 响应里就带完整 lineItems）
   // ============================================================
+  // 从网址/页面路径推断市场（如 /es-ar/ -> es-AR, /en-us/ -> en-US）
+  function inferMarket() {
+    try {
+      var m = (location.pathname || '').match(/^\/([a-z]{2})-([a-z]{2})\//i);
+      if (m) return { market: (m[1] + '-' + m[2]).toUpperCase().replace('-', '-'), locale: m[1].toLowerCase() + '-' + m[2].toUpperCase() };
+    } catch (e) {}
+    return null;
+  }
+
   function captureFromResponse(url, text) {
     if (!text) return;
     if (!/cart\.production\.store-web\.dynamics\.com\/.*\/cart\/loadCart/i.test(url)) return;
@@ -322,8 +383,15 @@
       if (pid && sid && aid) items.push({ productId: pid, availabilityId: aid, skuId: sid });
     }
     if (!items.length) return;
+    var im = inferMarket();
+    if (im) {
+      for (var q = 0; q < items.length; q++) {
+        if (!items[q].market) items[q].market = im.market;
+        if (!items[q].locale) items[q].locale = im.locale;
+      }
+    }
     log('响应采集 items=', items);
-    handleCaptureItems(items);
+    handleCaptureItems(items, 'response');
   }
 
   // 把 handleCapture 拆出可复用的 items 版本
