@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.0.0
+// @version      4.0.1
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活
 // @author       theslugger
+// @updateURL    https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@main/web/xbox-family-gift.user.js
+// @downloadURL  https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@main/web/xbox-family-gift.user.js
 // @match        https://www.xbox.com/*
 // @match        https://www.microsoft.com/*
 // @match        https://account.microsoft.com/*
