@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.1.0
+// @version      3.2.0
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。GM存储跨域共享 + unsafeWindow劫持页面真实请求
 // @author       theslugger
 // @match        https://www.xbox.com/*
@@ -90,7 +90,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 家庭组送礼脚本</b><span id="xfg-tg">收起</span>' +
+        '<b>Xbox 送礼脚本</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -100,6 +100,8 @@
           '<button id="xfg-refresh" style="flex:1;padding:5px;background:#222;color:#eee;border:1px solid #444;border-radius:6px;cursor:pointer">刷新</button>' +
           '<button id="xfg-clear" style="flex:1;padding:5px;background:#3a1a1a;color:#f99;border:1px solid #633;border-radius:6px;cursor:pointer">清空</button>' +
           '<button id="xfg-test" style="flex:1;padding:5px;background:#1a2a3a;color:#9cf;border:1px solid #246;border-radius:6px;cursor:pointer">自检</button>' +
+        '<button id="xfg-export" style="flex:1;padding:5px;background:#222;color:#ff0;border:1px solid #444;border-radius:6px;cursor:pointer">导出</button>' +
+        '<button id="xfg-import" style="flex:1;padding:5px;background:#222;color:#0ff;border:1px solid #444;border-radius:6px;cursor:pointer">导入</button>' +
         '</div>' +
       '</div>';
     document.documentElement.appendChild(panelEl);
@@ -120,6 +122,22 @@
     });
     panelEl.querySelector('#xfg-test').addEventListener('click', function () {
       handleCaptureItems([{ productId: 'TESTPROD0001', availabilityId: 'TESTAVAIL01', skuId: '0010' }]);
+    });
+    panelEl.querySelector('#xfg-export').addEventListener('click', function () {
+      var txt = JSON.stringify({ game: store.get(KEY_GAME), iap: store.get(KEY_IAP) });
+      try { navigator.clipboard.writeText(txt); } catch (e) {}
+      prompt('已复制。到另一页面点【导入】粘贴：', txt);
+    });
+    panelEl.querySelector('#xfg-import').addEventListener('click', function () {
+      var raw = prompt('粘贴导出的 JSON：');
+      if (!raw) return;
+      try {
+        var o = JSON.parse(raw);
+        if (o.game) store.set(KEY_GAME, o.game);
+        if (o.iap) store.set(KEY_IAP, o.iap);
+        if (o.game && o.iap) store.set(KEY_LOCK, true);
+        refreshPanel(); panelAdd('已导入 ID');
+      } catch (e) { panelAdd('导入失败: JSON 格式错误'); }
     });
     refreshPanel();
     panelAdd('脚本已注入页面世界(@grant none)');
