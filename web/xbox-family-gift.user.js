@@ -1,13 +1,17 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.0.0
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。改为 @grant none 直接跑在页面世界，才能真正劫持到页面请求
+// @version      3.1.0
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。GM存储跨域共享 + unsafeWindow劫持页面真实请求
 // @author       theslugger
 // @match        https://www.xbox.com/*
 // @match        https://www.microsoft.com/*
 // @match        https://account.microsoft.com/*
-// @grant        none
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
 // @run-at       document-start
 // ==/UserScript==
 
@@ -306,9 +310,10 @@
 
   // 把 handleCapture 拆出可复用的 items 版本
   // ============================================================
-  const origFetch = window.fetch;
+  const PAGE = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
+  const origFetch = PAGE.fetch;
   if (origFetch) {
-    window.fetch = function (input, init) {
+    PAGE.fetch = function (input, init) {
       const url = typeof input === "string" ? input : (input && input.url) || "";
       const isCap = RE_CAPTURE.test(url);
       const isSwap = RE_SWAP.test(url);
@@ -338,7 +343,7 @@
   // ============================================================
   // XHR hook（请求替换 + 响应采集）
   // ============================================================
-  const XHR = window.XMLHttpRequest;
+  const XHR = PAGE.XMLHttpRequest;
   if (XHR) {
     const origOpen = XHR.prototype.open;
     const origSend = XHR.prototype.send;
