@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.0.0
+// @version      2.1.0
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时把游戏换成内购。纯网页，无需 Surge/Shadowrocket
 // @author       theslugger
 // @match        https://www.xbox.com/*
@@ -92,7 +92,11 @@
   function handleCapture(bodyStr) {
     const items = collectItems(bodyStr);
     log('handleCapture items=', items);
-    if (!items.length) return;
+    handleCaptureItems(items);
+  }
+
+  function handleCaptureItems(items) {
+    if (!items || !items.length) return;
     let game = store.get(KEY_GAME), iap = store.get(KEY_IAP);
     const locked = store.get(KEY_LOCK);
 
@@ -208,65 +212,64 @@
     return Promise.resolve(null);
   }
 
+  // ============================================================
+  // 从【响应体】采集（最可靠：loadCart 响应里就带完整 lineItems）
+  // ============================================================
+  function captureFromResponse(url, text) {
+    if (!text) return;
+    if (!/cart\.production\.store-web\.dynamics\.com\/.*\/cart\/loadCart/i.test(url)) return;
+    let o;
+    try { o = JSON.parse(text); } catch (e) { return; }
+    if (!o) return;
+    const cart = o.cart;
+    if (!cart) return;
+    const arr = cart.lineItems || [];
+    if (!arr.length) return;
+    const items = [];
+    for (const it of arr) {
+      const pid = it && it.productId;
+      const sid = it && it.skuId;
+      const aid = it && (it.availabilityId || "");
+      if (pid && sid && aid) items.push({ productId: pid, availabilityId: aid, skuId: sid });
+    }
+    if (!items.length) return;
+    log('响应采集 items=', items);
+    handleCaptureItems(items);
+  }
+
+  // 把 handleCapture 拆出可复用的 items 版本
+  // ============================================================
   const origFetch = window.fetch;
   if (origFetch) {
     window.fetch = function (input, init) {
-      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      const url = typeof input === "string" ? input : (input && input.url) || "";
       const isCap = RE_CAPTURE.test(url);
       const isSwap = RE_SWAP.test(url);
 
-      if (!isCap && !isSwap) return origFetch.apply(this, arguments);
-
-      // 同步路径：init.body 是字符串
-      let bodyStr = init && typeof init.body === 'string' ? init.body : null;
-
-      if (bodyStr) {
-        try {
-          if (isCap) handleCapture(bodyStr);
-          if (isSwap) {
-            const nb = maybeSwap(url, bodyStr);
-            if (nb) init = Object.assign({}, init, { body: nb });
-          }
-        } catch (e) { log('hook sync err', e); }
-        return origFetch.apply(this, [input, init]);
-      }
-
-      // 异步路径：body 在 Request 对象里 / 非字符串
-      if (isCap) {
-        readRequestBody(input).then(t => { if (t) handleCapture(t); }).catch(() => {});
-        if (init && init.body && typeof init.body === 'object') {
-          try {
-            const t = String(init.body);
-            if (t && t !== '[object Object]') handleCapture(t);
-          } catch (e) {}
-        }
-        return origFetch.apply(this, arguments);
-      }
-
+      // 先做请求侧替换
+      let args = arguments;
       if (isSwap) {
-        return readRequestBody(input).then(t => {
-          if (t) {
-            const nb = maybeSwap(url, t);
-            if (nb) {
-              // 用原 Request 的其它属性 + 新 body 重建
-              try {
-                const req = new Request(input, { body: nb });
-                return origFetch.call(this, req);
-              } catch (e) {
-                return origFetch.call(this, input, Object.assign({}, init, { body: nb }));
-              }
-            }
-          }
-          return origFetch.apply(this, arguments.length > 1 ? [input, init] : [input]);
-        });
+        const bodyStr = init && typeof init.body === "string" ? init.body : null;
+        if (bodyStr) {
+          try {
+            const nb = maybeSwap(url, bodyStr);
+            if (nb) args = [input, Object.assign({}, init, { body: nb })];
+          } catch (e) { log("swap sync err", e); }
+        }
       }
 
-      return origFetch.apply(this, arguments);
+      const p = origFetch.apply(this, args);
+      if (isCap) {
+        p.then(resp => {
+          try { resp.clone().text().then(t => captureFromResponse(url, t)).catch(() => {}); } catch (e) {}
+        }).catch(() => {});
+      }
+      return p;
     };
   }
 
   // ============================================================
-  // XHR hook
+  // XHR hook（请求替换 + 响应采集）
   // ============================================================
   const XHR = window.XMLHttpRequest;
   if (XHR) {
@@ -277,69 +280,64 @@
       return origOpen.apply(this, arguments);
     };
     XHR.prototype.send = function (body) {
+      const url = this.__xfgUrl || "";
       try {
-        const url = this.__xfgUrl || '';
-        if (typeof body === 'string') {
-          if (RE_CAPTURE.test(url)) handleCapture(body);
-          if (RE_SWAP.test(url)) { const nb = maybeSwap(url, body); if (nb) body = nb; }
+        if (typeof body === "string" && RE_SWAP.test(url)) {
+          const nb = maybeSwap(url, body);
+          if (nb) body = nb;
         }
-      } catch (e) { log('xhr err', e); }
+      } catch (e) { log("xhr swap err", e); }
+      if (RE_CAPTURE.test(url)) {
+        const xhr = this;
+        xhr.addEventListener("load", function () {
+          try {
+            const rt = xhr.responseType;
+            let text = null;
+            if (rt === "" || rt === "text") text = xhr.responseText;
+            else if (rt === "json") text = JSON.stringify(xhr.response);
+            captureFromResponse(url, text);
+          } catch (e) {}
+        });
+      }
       return origSend.call(this, body);
     };
   }
 
   // ============================================================
-  // sendBeacon hook（部分厂商用）
-  // ============================================================
-  try {
-    const origBeacon = navigator.sendBeacon;
-    if (origBeacon) {
-      navigator.sendBeacon = function (url, data) {
-        try {
-          const u = String(url);
-          if (typeof data === 'string' && RE_CAPTURE.test(u)) handleCapture(data);
-        } catch (e) {}
-        return origBeacon.apply(this, arguments);
-      };
-    }
-  } catch (e) {}
-
-  // ============================================================
   // 菜单
   // ============================================================
   try {
-    if (typeof GM_registerMenuCommand === 'function') {
-      GM_registerMenuCommand('查看已采集 ID', () => {
+    if (typeof GM_registerMenuCommand === "function") {
+      GM_registerMenuCommand("查看已采集 ID", () => {
         const g = store.get(KEY_GAME), t = store.get(KEY_IAP);
-        notify('已采集', '游戏: ' + (g ? g.productId + ' / ' + g.availabilityId : '无'), '内购: ' + (t ? t.productId + ' / ' + t.availabilityId : '无'));
+        notify("已采集", "游戏: " + (g ? g.productId + " / " + g.availabilityId : "无"), "内购: " + (t ? t.productId + " / " + t.availabilityId : "无"));
       });
-      GM_registerMenuCommand('清空已采集 ID', () => {
+      GM_registerMenuCommand("清空已采集 ID", () => {
         store.del(KEY_GAME); store.del(KEY_IAP); store.del(KEY_LOCK);
-        notify('已清空', '已重置', '请重新加购');
+        notify("已清空", "已重置", "请重新加购");
       });
-      GM_registerMenuCommand('导出 ID', () => {
+      GM_registerMenuCommand("导出 ID", () => {
         const txt = JSON.stringify({ game: store.get(KEY_GAME), iap: store.get(KEY_IAP) });
         try { navigator.clipboard.writeText(txt); } catch (e) {}
-        prompt('已尝试复制，可手动复制：', txt);
+        prompt("已尝试复制：", txt);
       });
-      GM_registerMenuCommand('导入 ID', () => {
-        const raw = prompt('粘贴 JSON：'); if (!raw) return;
+      GM_registerMenuCommand("导入 ID", () => {
+        const raw = prompt("粘贴 JSON："); if (!raw) return;
         try {
           const o = JSON.parse(raw);
           if (o.game) store.set(KEY_GAME, o.game);
           if (o.iap) store.set(KEY_IAP, o.iap);
           if (o.game && o.iap) store.set(KEY_LOCK, true);
-          notify('已导入', '游戏: ' + (o.game && o.game.productId), '内购: ' + (o.iap && o.iap.productId));
-        } catch (e) { notify('导入失败', 'JSON 不对', ''); }
+          notify("已导入", "游戏: " + (o.game && o.game.productId), "内购: " + (o.iap && o.iap.productId));
+        } catch (e) { notify("导入失败", "JSON 不对", ""); }
       });
-      GM_registerMenuCommand('解除锁定', () => { store.del(KEY_LOCK); notify('已解除锁定', '可重新采集', ''); });
-      GM_registerMenuCommand('测试采集(自检)', () => {
-        const demo = JSON.stringify({ itemsToAdd: { items: [{ productId: 'TESTPROD0001', skuId: '0010', availabilityId: 'TESTAVAIL01' }] } });
-        handleCapture(demo);
-        notify('自检完成', '若看到弹窗说明脚本正常', '（这是假数据，记得清空）');
+      GM_registerMenuCommand("解除锁定", () => { store.del(KEY_LOCK); notify("已解除锁定", "可重新采集", ""); });
+      GM_registerMenuCommand("测试采集(自检)", () => {
+        handleCaptureItems([{ productId: "TESTPROD0001", availabilityId: "TESTAVAIL01", skuId: "0010" }]);
+        notify("自检完成", "若看到①②弹窗说明采集正常", "记得清空");
       });
     }
   } catch (e) {}
 
-  log('v2 injected');
+  log("v2.1 injected");
 })();
