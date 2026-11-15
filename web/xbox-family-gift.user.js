@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.3.0
+// @version      3.4.0
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。GM存储跨域共享 + unsafeWindow劫持页面真实请求
 // @author       theslugger
 // @match        https://www.xbox.com/*
@@ -277,11 +277,42 @@
     if (obj.skuId !== undefined && t.skuId) obj.skuId = t.skuId;
     return 1;
   }
+  // availabilityId 是按市场分配的；已知映射用于兜底反查
+  // availabilityId 按市场分配；同一 productId+skuId 在不同市场有不同 availabilityId
+  var AVAIL_BY_MARKET = {
+    '9P6LX2D15SD7': {
+      'US': '9XPHQG4220WG',
+      'AR': 'B2XRTR8KPHPM',
+      'JP': '9XJRWRN87FRX'
+    }
+  };
+  var AVAIL_MARKET = {
+    'B2XRTR8KPHPM': 'AR', 'B26TLGNG62BG': 'AR',
+    '9XPHQG4220WG': 'US', '9N3TNRFCDFGJ': 'US',
+    '9XJRWRN87FRX': 'JP', '9V7LMZ5BPBXJ': 'JP'
+  };
+  function marketOfAvail(aid) { return AVAIL_MARKET[String(aid).toUpperCase()] || ''; }
+  // 把 availabilityId 归一到订单所属市场，避免跨市场 404
+  function alignAvail(t, orderMarket) {
+    if (!t || !t.productId || !orderMarket) return t;
+    var m = AVAIL_BY_MARKET[String(t.productId).toUpperCase()];
+    if (!m) return t;
+    var want = m[String(orderMarket).toUpperCase()];
+    if (!want || want === t.availabilityId) return t;
+    var out = { productId: t.productId, availabilityId: want, skuId: t.skuId, market: orderMarket };
+    log('availabilityId 按市场归一: ' + t.availabilityId + ' -> ' + want + ' (' + orderMarket + ')');
+    return out;
+  }
+
   function swapOrdersJson(bodyStr, g, t) {
     let o; try { o = JSON.parse(bodyStr); } catch (e) { return null; }
     let n = 0;
     // 市场必须与内购 ID 所属市场一致，否则 DisplayCatalog 404
+    // 优先：保持订单原 market，把内购 availabilityId 换成该市场对应的值
+    var orderMk = (o.market || '').toUpperCase();
+    if (orderMk) t = alignAvail(t, orderMk);
     var mk = (t && t.market) ? String(t.market).toUpperCase() : '';
+    if (!mk && t && t.availabilityId) mk = marketOfAvail(t.availabilityId) || '';
     if (mk && o.market && o.market.toUpperCase() !== mk) {
       o.market = mk;
       n++;
