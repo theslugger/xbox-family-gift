@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.7.0
+// @version      3.8.0
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。GM存储跨域共享 + unsafeWindow劫持页面真实请求
 // @author       theslugger
 // @match        https://www.xbox.com/*
@@ -159,9 +159,24 @@
         store.get(KEY_MARKET) || ''
       );
       if (raw === null) return;
-      raw = raw.trim().toUpperCase();
-      if (!raw) { store.del(KEY_MARKET); panelAdd('目标市场：跟随订单'); }
-      else { store.set(KEY_MARKET, raw); panelAdd('目标市场已设为 ' + raw + '（订单/付款页都会用这个市场）'); }
+      var mk = normMarket(raw);
+      if (!raw.trim()) { store.del(KEY_MARKET); panelAdd('目标市场：跟随订单'); refreshPanel(); return; }
+      if (!mk) { panelAdd('❌ 无法识别市场码「' + raw + '」，请输入 AR / US / JP 这类两字母代码'); return; }
+      store.set(KEY_MARKET, mk);
+      var loc = MARKET_LOCALE[mk] || mk.toLowerCase();
+      panelAdd('目标市场已设为 ' + mk + '（订单/付款页都会用这个市场）');
+      panelAdd('请到 https://www.xbox.com/' + loc + '/ 重新加购游戏和内购');
+      // 已有 ID 若不属于该市场，立即提示
+      var g0 = store.get(KEY_GAME), t0 = store.get(KEY_IAP);
+      if (g0 && t0) {
+        var c = checkMarket([{ which: '游戏', id: g0 }, { which: '内购', id: t0 }], mk);
+        if (!c.ok) {
+          c.bad.forEach(function (b) {
+            panelAdd('⚠️ ' + b.which + '属于 ' + b.real + '（' + b.aid + '），需重新采集');
+          });
+          notify('⚠️ 已采集 ID 与 ' + mk + ' 不符', '请到 /' + loc + '/ 重新加购', '否则会跳过替换');
+        }
+      }
       refreshPanel();
     });
     panelEl.querySelector('#xfg-import').addEventListener('click', function () {
@@ -187,7 +202,16 @@
     st.innerHTML =
       '<div>① 游戏: <b style="color:#7fd">' + (g ? g.productId + '<br><span style="color:#888">avail ' + g.availabilityId + ' sku ' + g.skuId + (g.market ? ' · market ' + g.market : '') + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
       '<div style="margin-top:4px">② 内购: <b style="color:#7fd">' + (t ? t.productId + '<br><span style="color:#888">avail ' + t.availabilityId + ' sku ' + t.skuId + (t.market ? ' · market ' + t.market : '') + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
-      '<div style="margin-top:4px">状态: ' + (lk ? '<b style="color:#ff0">🔒 已锁定</b>' : '<span style="color:#888">采集中</span>') + '</div>';
+      '<div style="margin-top:4px">状态: ' + (lk ? '<b style="color:#ff0">🔒 已锁定</b>' : '<span style="color:#888">采集中</span>') + '</div>' +
+      (function () {
+        var tgt = targetMarket();
+        if (!tgt) return '<div style="margin-top:2px;color:#888">市场: 跟随订单</div>';
+        var c = (g && t) ? checkMarket([{ which: '游戏', id: g }, { which: '内购', id: t }], tgt) : { ok: true, bad: [] };
+        var loc = MARKET_LOCALE[tgt] || tgt.toLowerCase();
+        var col = c.ok ? '#7fd' : '#f77';
+        var extra = c.ok ? '' : '<br><span style="color:#f77">中 ' + c.bad.map(function (b) { return b.which + '是' + b.real; }).join('、') + '，去 /' + loc + '/ 重采</span>';
+        return '<div style="margin-top:2px;color:' + col + '">市场: <b>' + tgt + '</b> (/' + loc + '/)' + extra + '</div>';
+      })();
   }
 
 
@@ -294,8 +318,7 @@
     if (obj.skuId !== undefined && t.skuId) obj.skuId = t.skuId;
     return 1;
   }
-  // availabilityId 是按市场分配的；已知映射用于兜底反查
-  // availabilityId 按市场分配；同一 productId+skuId 在不同市场有不同 availabilityId
+  // availabilityId 是按市场分配的；同一 productId+skuId 在不同市场有不同 availabilityId
   var AVAIL_BY_MARKET = {
     '9P6LX2D15SD7': {
       'US': '9XPHQG4220WG',
@@ -309,16 +332,69 @@
     '9XJRWRN87FRX': 'JP', '9V7LMZ5BPBXJ': 'JP'
   };
   function marketOfAvail(aid) { return AVAIL_MARKET[String(aid).toUpperCase()] || ''; }
-  // 把 availabilityId 归一到订单所属市场，避免跨市场 404
+
+  // ============================================================
+  // 市场码归一化：DisplayCatalog / purchase 只认两字母（AR/US/JP）
+  // 页面路径 es-ar / zh-jp 给的是「语言-地区」，必须剥掉语言部分
+  //   ES-AR -> AR,  ZH-JP -> JP,  EN-US -> US,  AR -> AR,  es_AR -> AR
+  // ============================================================
+  var KNOWN_MARKETS = {
+    AR:'AR', US:'US', JP:'JP', TR:'TR', NG:'NG', BR:'BR', MX:'MX', CO:'CO',
+    CL:'CL', PE:'PE', RU:'RU', UA:'UA', KZ:'KZ', IN:'IN', ID:'ID', MY:'MY',
+    TH:'TH', VN:'VN', PH:'PH', EG:'EG', ZA:'ZA', SA:'SA', AE:'AE', PL:'PL',
+    HU:'HU', CZ:'CZ', SK:'SK', RO:'RO', BG:'BG', GR:'GR', PT:'PT', ES:'ES',
+    IT:'IT', DE:'DE', FR:'FR', NL:'NL', BE:'BE', AT:'AT', CH:'CH', SE:'SE',
+    NO:'NO', DK:'DK', FI:'FI', IE:'IE', GB:'GB', CA:'CA', AU:'AU', NZ:'NZ',
+    SG:'SG', HK:'HK', TW:'TW', KR:'KR', CN:'CN', IL:'IL', QA:'QA', KW:'KW'
+  };
+  function normMarket(v) {
+    if (!v) return '';
+    var s = String(v).toUpperCase().replace(/[^A-Z]/g, '');
+    if (s.length === 2) return KNOWN_MARKETS[s] ? s : '';
+    // 4 字母形如 ESAR / ZHJP：取后两位
+    if (s.length === 4) {
+      var tail = s.slice(2);
+      if (KNOWN_MARKETS[tail]) return tail;
+      var head = s.slice(0, 2);
+      if (KNOWN_MARKETS[head]) return head;
+    }
+    return '';
+  }
+  // 市场 -> 页面语言前缀，用于引导用户去正确地区的页面加购
+  var MARKET_LOCALE = {
+    AR:'es-ar', US:'en-us', JP:'ja-jp', TR:'tr-tr', NG:'en-ng', BR:'pt-br',
+    MX:'es-mx', CO:'es-co', CL:'es-cl', RU:'ru-ru', IN:'en-in', GB:'en-gb',
+    CA:'en-ca', AU:'en-au', DE:'de-de', FR:'fr-fr', ES:'es-es', IT:'it-it'
+  };
+  function targetMarket() { return normMarket(store.get(KEY_MARKET)); }
+  function pageMarket() { var im = inferMarket(); return im ? im.market : ''; }
+
+  // 把 availabilityId 归一到目标市场，避免跨市场 404
   function alignAvail(t, orderMarket) {
-    if (!t || !t.productId || !orderMarket) return t;
+    if (!t || !t.productId) return t;
+    var mk = normMarket(orderMarket);
+    if (!mk) return t;
     var m = AVAIL_BY_MARKET[String(t.productId).toUpperCase()];
     if (!m) return t;
-    var want = m[String(orderMarket).toUpperCase()];
+    var want = m[mk];
     if (!want || want === t.availabilityId) return t;
-    var out = { productId: t.productId, availabilityId: want, skuId: t.skuId, market: orderMarket };
-    log('availabilityId 按市场归一: ' + t.availabilityId + ' -> ' + want + ' (' + orderMarket + ')');
+    var out = { productId: t.productId, availabilityId: want, skuId: t.skuId, market: mk };
+    log('availabilityId 按市场归一: ' + t.availabilityId + ' -> ' + want + ' (' + mk + ')');
     return out;
+  }
+
+  // 校验一组 ID 是否属于目标市场；返回 {ok, bad:[{which, aid, real}]}
+  function checkMarket(ids, tgt) {
+    var mk = normMarket(tgt);
+    if (!mk) return { ok: true, bad: [] };
+    var bad = [];
+    ids.forEach(function (p) {
+      if (!p || !p.id || !p.id.availabilityId) return;
+      // 优先查静态表；查不到就看该 ID 的 market 字段
+      var real = marketOfAvail(p.id.availabilityId) || normMarket(p.id.market);
+      if (real && real !== mk) bad.push({ which: p.which, aid: p.id.availabilityId, real: real });
+    });
+    return { ok: bad.length === 0, bad: bad };
   }
 
   function swapOrdersJson(bodyStr, g, t) {
@@ -327,18 +403,12 @@
     // 市场必须与内购 ID 所属市场一致，否则 DisplayCatalog 404
     // 优先：保持订单原 market，把内购 availabilityId 换成该市场对应的值
     // 目标市场优先（面板/菜单设定），否则跟随订单
-    var tgt = String(store.get(KEY_MARKET) || '').toUpperCase();
-    var orderMk = tgt || (o.market || '').toUpperCase();
+    var tgt = targetMarket();
+    var orderMk = tgt || normMarket(o.market);
     if (orderMk) t = alignAvail(t, orderMk);
-    if (tgt && o.market && o.market.toUpperCase() !== tgt) {
-      log('订单市场强制 ' + o.market + ' -> ' + tgt);
-      o.market = tgt;
-      n++;
-    }
-    var mk = (t && t.market) ? String(t.market).toUpperCase() : '';
-    if (!mk && t && t.availabilityId) mk = marketOfAvail(t.availabilityId) || '';
-    if (mk && o.market && o.market.toUpperCase() !== mk) {
-      o.market = mk;
+    if (orderMk && normMarket(o.market) !== orderMk) {
+      log('订单市场 ' + (o.market || '?') + ' -> ' + orderMk);
+      o.market = orderMk;
       n++;
     }
     var lc = (t && t.locale) ? String(t.locale) : '';
@@ -368,8 +438,8 @@
     let arr; try { arr = JSON.parse(unq(d['products'])); } catch (e) { return null; }
     if (!Array.isArray(arr)) return null;
     // buynow 的 market 参数决定目录查询市场；内购 availabilityId 需与之对齐
-    const tgt = String(store.get(KEY_MARKET) || '').toUpperCase();
-    const formMarket = tgt || (d['market'] ? unq(d['market']).toUpperCase() : '');
+    const tgt = targetMarket();
+    const formMarket = tgt || normMarket(unq(d['market'] || ''));
     let tt = t;
     if (formMarket && t && t.productId) tt = alignAvail(t, formMarket);
     let cn = 0; arr.forEach(it => { cn += swapOne(it, g, tt); });
@@ -383,11 +453,33 @@
     });
     return { body: parts.join('&'), n: cn };
   }
+  // 采集结果与目标市场不符时，明确提示应去哪加购，而不是带着错 ID 去下单
+  var warnedMarket = '';
+  function guardMarket(g, t) {
+    var tgt = targetMarket();
+    if (!tgt) return true;
+    var c = checkMarket([{ which: '游戏', id: g }, { which: '内购', id: t }], tgt);
+    if (c.ok) { warnedMarket = ''; return true; }
+    var key = tgt + '|' + c.bad.map(function (b) { return b.which + b.real; }).join(',');
+    if (warnedMarket !== key) {
+      warnedMarket = key;
+      var loc = MARKET_LOCALE[tgt] || tgt.toLowerCase();
+      var msgs = c.bad.map(function (b) {
+        return b.which + ' 属于 ' + b.real + '（' + b.aid + '）';
+      }).join('；');
+      notify('⚠️ 地区不匹配，已跳过替换', '目标 ' + tgt + '，实际：' + msgs,
+        '请到 www.xbox.com/' + loc + '/ 重新加购游戏与内购，或把「市场」改成 ID 所属地区');
+      log('地区校验失败，阻止替换', c.bad);
+    }
+    return false;
+  }
+
   function maybeSwap(url, bodyStr) {
     if (typeof bodyStr !== 'string' || !bodyStr) return null;
     const g = store.get(KEY_GAME), t = store.get(KEY_IAP);
     if (!g || !t) return null;
     if (!t.availabilityId) { log('内购缺 availabilityId，跳过替换防404'); return null; }
+    if (!guardMarket(g, t)) return null;
     if (/purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders/.test(url)) {
       const r = swapOrdersJson(bodyStr, g, t);
       if (r) { notify('✅ 订单已换内购', t.productId, '字段:' + r.n); return r.body; }
@@ -556,7 +648,7 @@
         const el = form.elements[i];
         if (el && el.name === 'market') { mk = String(el.value || '').toUpperCase(); break; }
       }
-      const tgt = String(store.get(KEY_MARKET) || '').toUpperCase();
+      const tgt = targetMarket();
       if (tgt) mk = tgt;
       let tt = t;
       if (mk) tt = alignAvail(t, mk);
@@ -649,8 +741,12 @@
         var raw = prompt("目标结算市场（AR/US/JP/TR/NG，留空=跟随订单）：", store.get(KEY_MARKET) || "");
         if (raw === null) return;
         raw = raw.trim().toUpperCase();
-        if (!raw) { store.del(KEY_MARKET); notify("目标市场", "跟随订单", ""); }
-        else { store.set(KEY_MARKET, raw); notify("目标市场", raw, "订单与付款页统一用此市场"); }
+        if (!raw.trim()) { store.del(KEY_MARKET); notify("目标市场", "跟随订单", ""); return; }
+        var mk = normMarket(raw);
+        if (!mk) { notify("目标市场", "无法识别「" + raw + "」", "请输入 AR / US / JP"); return; }
+        store.set(KEY_MARKET, mk);
+        var loc2 = MARKET_LOCALE[mk] || mk.toLowerCase();
+        notify("目标市场", mk, "请到 xbox.com/" + loc2 + "/ 重新加购");
       });
       GM_registerMenuCommand("解除锁定", () => { store.del(KEY_LOCK); notify("已解除锁定", "可重新采集", ""); });
       GM_registerMenuCommand("测试采集(自检)", () => {
