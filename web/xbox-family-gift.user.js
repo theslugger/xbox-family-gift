@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.6.0
+// @version      3.7.0
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。GM存储跨域共享 + unsafeWindow劫持页面真实请求
 // @author       theslugger
 // @match        https://www.xbox.com/*
@@ -21,6 +21,7 @@
   const KEY_GAME = 'xfg_idsGame';
   const KEY_IAP  = 'xfg_idsIAP';
   const KEY_LOCK = 'xfg_locked';
+  const KEY_MARKET = 'xfg_targetMarket';   // 目标结算市场：AR / US / JP / ''=跟随订单
   const DEBUG = true;
 
   // ============================================================
@@ -104,6 +105,7 @@
         '<button id="xfg-import" style="flex:1;padding:5px;background:#222;color:#0ff;border:1px solid #444;border-radius:6px;cursor:pointer">导入</button>' +
         '<button id="xfg-swap" style="flex:1;padding:5px;background:#2a1a3a;color:#c9f;border:1px solid #536;border-radius:6px;cursor:pointer">交换①②</button>' +
         '<button id="xfg-manual" style="flex:1;padding:5px;background:#2a2a1a;color:#ff9;border:1px solid #553;border-radius:6px;cursor:pointer">手动指定</button>' +
+        '<button id="xfg-mkt" style="flex:1;padding:5px;background:#1a2a1a;color:#9f9;border:1px solid #365;border-radius:6px;cursor:pointer">市场</button>' +
         '</div>' +
       '</div>';
     document.documentElement.appendChild(panelEl);
@@ -145,6 +147,21 @@
       var obj = { productId: parts[0].trim(), availabilityId: parts[1].trim(), skuId: (parts[2] || '0010').trim() };
       store.set(KEY_IAP, obj);
       panelAdd('已手动指定内购: ' + obj.productId + ' / ' + obj.availabilityId);
+      refreshPanel();
+    });
+    panelEl.querySelector('#xfg-mkt').addEventListener('click', function () {
+      var cur = String(store.get(KEY_MARKET) || '') || '跟随订单';
+      var raw = prompt(
+        '目标结算市场（两字母代码，留空=跟随订单）：\n' +
+        '当前：' + cur + '\n\n' +
+        '常用：AR 阿根廷 / US 美国 / JP 日本 / TR 土耳其 / NG 尼日利亚\n\n' +
+        '注意：主号账单地区必须与该市场一致，否则下单会被拒。',
+        store.get(KEY_MARKET) || ''
+      );
+      if (raw === null) return;
+      raw = raw.trim().toUpperCase();
+      if (!raw) { store.del(KEY_MARKET); panelAdd('目标市场：跟随订单'); }
+      else { store.set(KEY_MARKET, raw); panelAdd('目标市场已设为 ' + raw + '（订单/付款页都会用这个市场）'); }
       refreshPanel();
     });
     panelEl.querySelector('#xfg-import').addEventListener('click', function () {
@@ -309,8 +326,15 @@
     let n = 0;
     // 市场必须与内购 ID 所属市场一致，否则 DisplayCatalog 404
     // 优先：保持订单原 market，把内购 availabilityId 换成该市场对应的值
-    var orderMk = (o.market || '').toUpperCase();
+    // 目标市场优先（面板/菜单设定），否则跟随订单
+    var tgt = String(store.get(KEY_MARKET) || '').toUpperCase();
+    var orderMk = tgt || (o.market || '').toUpperCase();
     if (orderMk) t = alignAvail(t, orderMk);
+    if (tgt && o.market && o.market.toUpperCase() !== tgt) {
+      log('订单市场强制 ' + o.market + ' -> ' + tgt);
+      o.market = tgt;
+      n++;
+    }
     var mk = (t && t.market) ? String(t.market).toUpperCase() : '';
     if (!mk && t && t.availabilityId) mk = marketOfAvail(t.availabilityId) || '';
     if (mk && o.market && o.market.toUpperCase() !== mk) {
@@ -344,7 +368,8 @@
     let arr; try { arr = JSON.parse(unq(d['products'])); } catch (e) { return null; }
     if (!Array.isArray(arr)) return null;
     // buynow 的 market 参数决定目录查询市场；内购 availabilityId 需与之对齐
-    const formMarket = d['market'] ? unq(d['market']).toUpperCase() : '';
+    const tgt = String(store.get(KEY_MARKET) || '').toUpperCase();
+    const formMarket = tgt || (d['market'] ? unq(d['market']).toUpperCase() : '');
     let tt = t;
     if (formMarket && t && t.productId) tt = alignAvail(t, formMarket);
     let cn = 0; arr.forEach(it => { cn += swapOne(it, g, tt); });
@@ -352,7 +377,9 @@
     const parts = bodyStr.split('&').map(p => {
       const i = p.indexOf('='); if (i < 0) return p;
       const k = unq(p.slice(0, i));
-      return k === 'products' ? p.slice(0, i) + '=' + qq(JSON.stringify(arr)) : p;
+      if (k === 'products') return p.slice(0, i) + '=' + qq(JSON.stringify(arr));
+      if (k === 'market' && tgt) return p.slice(0, i) + '=' + qq(tgt);
+      return p;
     });
     return { body: parts.join('&'), n: cn };
   }
@@ -529,6 +556,8 @@
         const el = form.elements[i];
         if (el && el.name === 'market') { mk = String(el.value || '').toUpperCase(); break; }
       }
+      const tgt = String(store.get(KEY_MARKET) || '').toUpperCase();
+      if (tgt) mk = tgt;
       let tt = t;
       if (mk) tt = alignAvail(t, mk);
 
@@ -540,7 +569,16 @@
       if (!n) return 0;
 
       inp.value = JSON.stringify(arr);
-      log('✅ buynow 表单已改写', arr);
+      if (tgt) {
+        for (let i = 0; i < form.elements.length; i++) {
+          const el = form.elements[i];
+          if (el && el.name === 'market') el.value = tgt;
+        }
+        try {
+          if (form.action) form.action = form.action.replace(/([?&]market=)[A-Za-z-]+/, '$1' + tgt);
+        } catch (e) {}
+      }
+      log('✅ buynow 表单已改写 market=' + (mk || '?'), arr);
       notify('✅ safety付款页已换内购', tt.productId + ' · sku ' + tt.skuId, 'market ' + (mk || '?'));
       return n;
     } catch (e) { log('patchBuynowForm err', e); return 0; }
@@ -606,6 +644,13 @@
           if (o.game && o.iap) store.set(KEY_LOCK, true);
           notify("已导入", "游戏: " + (o.game && o.game.productId), "内购: " + (o.iap && o.iap.productId));
         } catch (e) { notify("导入失败", "JSON 不对", ""); }
+      });
+      GM_registerMenuCommand("设置目标市场", () => {
+        var raw = prompt("目标结算市场（AR/US/JP/TR/NG，留空=跟随订单）：", store.get(KEY_MARKET) || "");
+        if (raw === null) return;
+        raw = raw.trim().toUpperCase();
+        if (!raw) { store.del(KEY_MARKET); notify("目标市场", "跟随订单", ""); }
+        else { store.set(KEY_MARKET, raw); notify("目标市场", raw, "订单与付款页统一用此市场"); }
       });
       GM_registerMenuCommand("解除锁定", () => { store.del(KEY_LOCK); notify("已解除锁定", "可重新采集", ""); });
       GM_registerMenuCommand("测试采集(自检)", () => {
