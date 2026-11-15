@@ -1,17 +1,13 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.1.0
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时把游戏换成内购。纯网页，无需 Surge/Shadowrocket
+// @version      3.0.0
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。改为 @grant none 直接跑在页面世界，才能真正劫持到页面请求
 // @author       theslugger
 // @match        https://www.xbox.com/*
 // @match        https://www.microsoft.com/*
 // @match        https://account.microsoft.com/*
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @grant        GM_deleteValue
-// @grant        GM_registerMenuCommand
-// @grant        GM_notification
+// @grant        none
 // @run-at       document-start
 // ==/UserScript==
 
@@ -48,6 +44,8 @@
   function notify(title, sub, body) {
     try { if (typeof GM_notification === 'function') GM_notification({ title, text: [sub, body].filter(Boolean).join('\n'), timeout: 6000 }); } catch (e) {}
     toast(title, sub, body);
+    panelAdd(title + ' ' + (sub || ''));
+    refreshPanel();
     log('NOTIFY', title, sub, body);
   }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -65,6 +63,75 @@
     } catch (e) {}
   }
   function log(...a) { if (DEBUG) console.log('%c[XFG]', 'color:#107C10;font-weight:700', ...a); }
+
+  // ============================================================
+  // 常驻面板（页面右下角，可折叠）：实时显示采集状态 + 最近事件
+  // ============================================================
+  var panelEl = null, logEl = null, bodyEl = null;
+  var logLines = [];
+
+  function panelAdd(msg) {
+    logLines.push(new Date().toLocaleTimeString() + ' ' + msg);
+    if (logLines.length > 30) logLines.shift();
+    if (logEl) logEl.textContent = logLines.join('\n');
+  }
+
+  function buildPanel() {
+    if (panelEl || !document.body) return;
+    panelEl = document.createElement('div');
+    panelEl.id = 'xfg-panel';
+    panelEl.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:2147483646;width:330px;' +
+      'background:#0b0b0b;color:#eee;border:1px solid #107C10;border-radius:10px;' +
+      'font:12px/1.45 -apple-system,Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.5);overflow:hidden';
+
+    panelEl.innerHTML =
+      '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
+        '<b>Xbox 家庭组送礼脚本</b><span id="xfg-tg">收起</span>' +
+      '</div>' +
+      '<div id="xfg-bd" style="padding:10px">' +
+        '<div id="xfg-state" style="margin-bottom:8px"></div>' +
+        '<div id="xfg-log" style="max-height:160px;overflow:auto;background:#000;border-radius:6px;padding:6px;' +
+          'font:11px/1.4 ui-monospace,Menlo,monospace;color:#9c9;white-space:pre-wrap"></div>' +
+        '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">' +
+          '<button id="xfg-refresh" style="flex:1;padding:5px;background:#222;color:#eee;border:1px solid #444;border-radius:6px;cursor:pointer">刷新</button>' +
+          '<button id="xfg-clear" style="flex:1;padding:5px;background:#3a1a1a;color:#f99;border:1px solid #633;border-radius:6px;cursor:pointer">清空</button>' +
+          '<button id="xfg-test" style="flex:1;padding:5px;background:#1a2a3a;color:#9cf;border:1px solid #246;border-radius:6px;cursor:pointer">自检</button>' +
+        '</div>' +
+      '</div>';
+    document.documentElement.appendChild(panelEl);
+
+    bodyEl = panelEl.querySelector('#xfg-bd');
+    logEl = panelEl.querySelector('#xfg-log');
+    var hd = panelEl.querySelector('#xfg-hd');
+    var tg = panelEl.querySelector('#xfg-tg');
+    hd.addEventListener('click', function () {
+      var open = bodyEl.style.display !== 'none';
+      bodyEl.style.display = open ? 'none' : '';
+      tg.textContent = open ? '展开' : '收起';
+    });
+    panelEl.querySelector('#xfg-refresh').addEventListener('click', refreshPanel);
+    panelEl.querySelector('#xfg-clear').addEventListener('click', function () {
+      store.del(KEY_GAME); store.del(KEY_IAP); store.del(KEY_LOCK);
+      logLines = []; refreshPanel(); panelAdd('已清空 idsGame/idsIAP');
+    });
+    panelEl.querySelector('#xfg-test').addEventListener('click', function () {
+      handleCaptureItems([{ productId: 'TESTPROD0001', availabilityId: 'TESTAVAIL01', skuId: '0010' }]);
+    });
+    refreshPanel();
+    panelAdd('脚本已注入页面世界(@grant none)');
+  }
+
+  function refreshPanel() {
+    if (!panelEl) return;
+    var st = panelEl.querySelector('#xfg-state');
+    if (!st) return;
+    var g = store.get(KEY_GAME), t = store.get(KEY_IAP), lk = store.get(KEY_LOCK);
+    st.innerHTML =
+      '<div>① 游戏: <b style="color:#7fd">' + (g ? g.productId + '<br><span style="color:#888">avail ' + g.availabilityId + ' sku ' + g.skuId + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
+      '<div style="margin-top:4px">② 内购: <b style="color:#7fd">' + (t ? t.productId + '<br><span style="color:#888">avail ' + t.availabilityId + ' sku ' + t.skuId + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
+      '<div style="margin-top:4px">状态: ' + (lk ? '<b style="color:#ff0">🔒 已锁定</b>' : '<span style="color:#888">采集中</span>') + '</div>';
+  }
+
 
   // ============================================================
   // 采集
@@ -339,5 +406,11 @@
     }
   } catch (e) {}
 
-  log("v2.1 injected");
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', buildPanel);
+  } else {
+    setTimeout(buildPanel, 0);
+  }
+
+  log("v3.0 injected (page world)");
 })();
