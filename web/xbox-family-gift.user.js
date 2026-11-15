@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.9.0
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。GM存储跨域共享 + unsafeWindow劫持页面真实请求
+// @version      4.0.0
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活
 // @author       theslugger
 // @match        https://www.xbox.com/*
 // @match        https://www.microsoft.com/*
@@ -12,6 +12,7 @@
 // @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
+// @connect      xbox.aappe.uk
 // @run-at       document-start
 // ==/UserScript==
 
@@ -23,6 +24,96 @@
   const KEY_LOCK = 'xfg_locked';
   const KEY_MARKET = 'xfg_targetMarket';   // 目标结算市场：AR / US / JP / ''=跟随订单
   const DEBUG = true;
+
+  // ============================================================
+  // 授权（服务端校验，核心逻辑不在本地）
+  // ============================================================
+  const KEY_LICENSE = 'xfg_license';
+  const KEY_GIFT    = 'xfg_giftId';
+  const SERVER_BASE = 'https://xbox.aappe.uk';
+
+  let licenseState = { valid: false, remaining: 0, checkedAt: 0, reason: '' };
+
+  function getLicense() {
+    const v = store.get(KEY_LICENSE);
+    return v && typeof v === 'object' && v.code ? v : null;
+  }
+  function setLicense(code) {
+    store.set(KEY_LICENSE, { code: String(code || '').toUpperCase().trim(), at: Date.now() });
+  }
+  function clearLicense() { store.del(KEY_LICENSE); }
+
+  /** 服务端校验（不扣次） */
+  async function verifyLicense(code) {
+    const c = code || (getLicense() || {}).code;
+    if (!c) return { ok: false, error: '未设置授权码' };
+    try {
+      const r = await fetch(SERVER_BASE + '/api/license/check', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: c })
+      });
+      const j = await r.json();
+      if (!j.ok) return { ok: false, error: j.error || '授权无效', reason: j.reason };
+      licenseState = { valid: true, remaining: j.data.remaining, checkedAt: Date.now(), reason: '' };
+      return { ok: true, remaining: j.data.remaining, total: j.data.total };
+    } catch (e) {
+      return { ok: false, error: '无法连接授权服务: ' + e.message };
+    }
+  }
+
+  /** 一次完整赠礼扣 1 次；giftId 幂等 */
+  async function consumeLicense(giftId, ctx) {
+    const c = (getLicense() || {}).code;
+    if (!c) return { ok: false, error: '未设置授权码' };
+    try {
+      const r = await fetch(SERVER_BASE + '/api/license/consume', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          code: c,
+          giftId: giftId || '',
+          market: (ctx && ctx.market) || '',
+          iap: (ctx && ctx.iap) || '',
+          game: (ctx && ctx.game) || ''
+        })
+      });
+      const j = await r.json();
+      if (!j.ok) return { ok: false, error: j.error || '扣次失败', reason: j.reason };
+      licenseState.valid = true;
+      licenseState.remaining = j.data.remaining;
+      return { ok: true, remaining: j.data.remaining, dedup: !!j.data.dedup };
+    } catch (e) {
+      return { ok: false, error: '无法连接授权服务: ' + e.message };
+    }
+  }
+
+  /** 本次赠礼的幂等键：同一次流程用同一个 */
+  function currentGiftId() {
+    let g = store.get(KEY_GIFT);
+    if (g && typeof g === 'string') return g;
+    return '';
+  }
+  function newGiftId() {
+    const g = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    store.set(KEY_GIFT, g);
+    return g;
+  }
+  function clearGiftId() { store.del(KEY_GIFT); }
+
+  /** 静默校验：有码就在后台验一次 */
+  async function backgroundVerify() {
+    const lic = getLicense();
+    if (!lic) return;
+    const r = await verifyLicense(lic.code);
+    if (!r.ok) {
+      licenseState = { valid: false, remaining: 0, checkedAt: Date.now(), reason: r.reason || 'invalid' };
+      toast('⚠️ 授权异常', r.error || '请重新输入授权码');
+    } else {
+      licenseState = { valid: true, remaining: r.remaining, checkedAt: Date.now(), reason: '' };
+    }
+    refreshPanel();
+  }
 
   // ============================================================
   // 存储（GM_* 优先）
@@ -107,6 +198,7 @@
         '<button id="xfg-manual" style="flex:1;padding:5px;background:#2a2a1a;color:#ff9;border:1px solid #553;border-radius:6px;cursor:pointer">手动指定</button>' +
         '<button id="xfg-mkt" style="flex:1;padding:5px;background:#1a2a1a;color:#9f9;border:1px solid #365;border-radius:6px;cursor:pointer">市场</button>' +
         '<button id="xfg-align" style="flex:1;padding:5px;background:#1a3a2a;color:#8fe;border:1px solid #365;border-radius:6px;cursor:pointer">自动对齐</button>' +
+        '<button id="xfg-lic" style="flex:1;padding:5px;background:#2a1a3a;color:#c8f;border:1px solid #536;border-radius:6px;cursor:pointer">授权</button>' +
         '</div>' +
       '</div>';
     document.documentElement.appendChild(panelEl);
@@ -181,6 +273,37 @@
       refreshPanel();
       try { autoAlignCaptured(); } catch (e) {}
     });
+    panelEl.querySelector('#xfg-lic').addEventListener('click', async function () {
+      var cur = getLicense();
+      var raw = prompt(
+        '输入授权码（格式 XXXX-XXXX-XXXX-XXXX）：\n' +
+        (cur ? '\n当前：' + String(cur.code).slice(-4) + ' 结尾\n' : '') +
+        '\n留空并确认 = 清除当前授权',
+        ''
+      );
+      if (raw === null) return;
+      raw = raw.trim();
+      if (!raw) {
+        clearLicense();
+        licenseState = { valid: false, remaining: 0, checkedAt: 0, reason: '' };
+        panelAdd('授权已清除');
+        refreshPanel();
+        return;
+      }
+      panelAdd('正在校验授权码…');
+      setLicense(raw);
+      var r = await verifyLicense();
+      if (!r.ok) {
+        clearLicense();
+        panelAdd('❌ ' + r.error);
+        toast('授权失败', r.error || '');
+      } else {
+        panelAdd('✅ 授权成功，剩余 ' + r.remaining + ' 次');
+        toast('授权成功', '剩余 ' + r.remaining + ' 次');
+      }
+      refreshPanel();
+    });
+
     panelEl.querySelector('#xfg-align').addEventListener('click', function () {
       var mk = targetMarket();
       if (!mk) { panelAdd('未设目标市场，先点「市场」设置 AR/US/JP'); return; }
@@ -221,6 +344,12 @@
       '<div>① 游戏: <b style="color:#7fd">' + (g ? g.productId + '<br><span style="color:#888">avail ' + g.availabilityId + ' sku ' + g.skuId + (g.market ? ' · market ' + g.market : '') + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
       '<div style="margin-top:4px">② 内购: <b style="color:#7fd">' + (t ? t.productId + '<br><span style="color:#888">avail ' + t.availabilityId + ' sku ' + t.skuId + (t.market ? ' · market ' + t.market : '') + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
       '<div style="margin-top:4px">状态: ' + (lk ? '<b style="color:#ff0">🔒 已锁定</b>' : '<span style="color:#888">采集中</span>') + '</div>' +
+      (function () {
+        var lic = getLicense();
+        if (!lic) return '<div style="margin-top:2px;color:#f77">授权: <b>未激活</b> — 点「授权」输入</div>';
+        if (!licenseState.valid) return '<div style="margin-top:2px;color:#f77">授权: <b>校验中/异常</b></div>';
+        return '<div style="margin-top:2px;color:#7fd">授权: 剩余 <b>' + licenseState.remaining + '</b> 次</div>';
+      })() +
       (function () {
         var tgt = targetMarket();
         if (!tgt) return '<div style="margin-top:2px;color:#888">市场: 跟随订单</div>';
@@ -625,23 +754,79 @@
     return false;
   }
 
+  // 一次赠礼只扣一次：同一 giftId 内只在首次成功替换时扣
+  let giftConsumed = false;
+
   function maybeSwap(url, bodyStr) {
     if (typeof bodyStr !== 'string' || !bodyStr) return null;
     const g = store.get(KEY_GAME), t = store.get(KEY_IAP);
     if (!g || !t) return null;
     if (!t.availabilityId) { log('内购缺 availabilityId，跳过替换防404'); return null; }
     if (!guardMarket(g, t)) return null;
+
+    // ---- 授权闸门：没授权就不替换 ----
+    if (!getLicense()) {
+      warnOnce('no-license', '未激活授权', '请在面板点「授权」输入授权码');
+      return null;
+    }
+    if (!licenseState.valid) {
+      warnOnce('lic-invalid', '授权无效', licenseState.reason || '请重新输入授权码');
+      return null;
+    }
+    if (licenseState.remaining <= 0 && !giftConsumed) {
+      warnOnce('lic-empty', '授权次数已用完', '请续费后再试');
+      return null;
+    }
+
+    // 本次赠礼的幂等键
+    if (!currentGiftId()) newGiftId();
+
     if (/purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders/.test(url)) {
       const r = swapOrdersJson(bodyStr, g, t);
-      if (r) { notify('✅ 订单已换内购', t.productId, '字段:' + r.n); return r.body; }
+      if (r) {
+        notify('✅ 订单已换内购', t.productId, '字段:' + r.n);
+        chargeOnce(t, g);
+        return r.body;
+      }
       return null;
     }
     if (/www\.microsoft\.com\/store\/purchase\/buynowui\/buynow/.test(url)) {
       const r = swapBuynowForm(bodyStr, g, t);
-      if (r) { notify('✅ safety购买页已换内购', t.productId + ' · sku ' + t.skuId, '字段:' + r.n); return r.body; }
+      if (r) {
+        notify('✅ safety购买页已换内购', t.productId + ' · sku ' + t.skuId, '字段:' + r.n);
+        chargeOnce(t, g);
+        return r.body;
+      }
       return null;
     }
     return null;
+  }
+
+  /** 同一次赠礼只扣一次 */
+  async function chargeOnce(t, g) {
+    if (giftConsumed) return;
+    giftConsumed = true;
+    const gid = currentGiftId();
+    const r = await consumeLicense(gid, {
+      market: targetMarket() || '',
+      iap: t ? t.productId : '',
+      game: g ? g.productId : ''
+    });
+    if (r.ok) {
+      panelAdd('已扣 1 次，剩余 ' + r.remaining + ' 次');
+      refreshPanel();
+    } else {
+      panelAdd('⚠️ 扣次失败: ' + r.error);
+    }
+  }
+
+  // 提示去重
+  var warnedKeys = {};
+  function warnOnce(key, title, msg) {
+    if (warnedKeys[key]) return;
+    warnedKeys[key] = true;
+    setTimeout(function () { delete warnedKeys[key]; }, 15000);
+    toast('⚠️ ' + title, msg);
   }
 
   // ============================================================
@@ -865,6 +1050,24 @@
   // ============================================================
   try {
     if (typeof GM_registerMenuCommand === "function") {
+      GM_registerMenuCommand("输入授权码", async () => {
+        var raw = prompt("输入授权码（XXXX-XXXX-XXXX-XXXX）：", "");
+        if (raw === null) return;
+        raw = raw.trim();
+        if (!raw) { clearLicense(); notify("授权", "已清除", ""); refreshPanel(); return; }
+        setLicense(raw);
+        var r = await verifyLicense();
+        if (!r.ok) { clearLicense(); notify("授权失败", r.error || "", ""); }
+        else notify("授权成功", "剩余 " + r.remaining + " 次", "");
+        refreshPanel();
+      });
+      GM_registerMenuCommand("查看授权状态", async () => {
+        var lic = getLicense();
+        if (!lic) return notify("授权", "未激活", "请先输入授权码");
+        var r = await verifyLicense();
+        if (!r.ok) notify("授权", r.error || "无效", "");
+        else notify("授权", "剩余 " + r.remaining + " 次", "");
+      });
       GM_registerMenuCommand("查看已采集 ID", () => {
         const g = store.get(KEY_GAME), t = store.get(KEY_IAP);
         notify("已采集", "游戏: " + (g ? g.productId + " / " + g.availabilityId : "无"), "内购: " + (t ? t.productId + " / " + t.availabilityId : "无"));
@@ -923,5 +1126,17 @@
     setTimeout(buildPanel, 0);
   }
 
-  log("v3.0 injected (page world)");
+  // 启动：后台校验授权 + 有新赠礼流程时重置扣次标志
+  setTimeout(function () {
+    backgroundVerify();
+  }, 800);
+
+  // 采集被清空 = 新一轮赠礼，重置幂等与扣次标志
+  var _origDel = store.del.bind(store);
+  store.del = function (k) {
+    if (k === KEY_LOCK) { giftConsumed = false; clearGiftId(); }
+    return _origDel(k);
+  };
+
+  log("v4.0 injected (licensed build)");
 })();
