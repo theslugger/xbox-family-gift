@@ -23,6 +23,7 @@
   // ============================================================
   const KEY_GAME = 'xfg_idsGame';
   const KEY_IAP  = 'xfg_idsIAP';
+  const KEY_LOCK = 'xfg_locked';   // 采集齐后锁定，避免主号操作时被覆盖
   const DEBUG = true;
 
   // ============================================================
@@ -127,6 +128,16 @@
     let game = store.get(KEY_GAME);
     let iap  = store.get(KEY_IAP);
 
+    // 已锁定(游戏+内购都采齐) -> 只做"命中"提示，绝不覆盖（防止主号操作时串号）
+    const locked = store.get(KEY_LOCK);
+    if (locked && game && iap) {
+      for (const ids of items) {
+        if (sameProduct(game, ids)) notify('①【游戏】命中(已锁定)', ids.productId, '不覆盖');
+        else if (sameProduct(iap, ids)) notify('②【内购】命中(已锁定)', ids.productId, '不覆盖');
+      }
+      return;
+    }
+
     for (const ids of items) {
       if (game && sameProduct(game, ids)) {
         if (!fullId(game) || game.availabilityId !== ids.availabilityId || game.skuId !== ids.skuId) {
@@ -154,7 +165,11 @@
         notify('②【内购】已记录', ids.productId, 'avail:' + ids.availabilityId + ' sku:' + ids.skuId);
       }
     }
-    log('capture', { game, iap });
+    if (game && iap && fullId(game) && fullId(iap)) {
+      store.set(KEY_LOCK, true);
+      notify('🔒 已锁定采集结果', '游戏+内购齐备', '付款时将自动替换为内购');
+    }
+    log('capture', { game, iap, locked: store.get(KEY_LOCK) });
   }
 
   // ============================================================
@@ -298,8 +313,29 @@
         notify('已采集', '游戏: ' + (g ? g.productId : '无'), '内购: ' + (t ? t.productId + ' / ' + t.availabilityId : '无'));
       });
       GM_registerMenuCommand('清空已采集 ID', () => {
-        store.del(KEY_GAME); store.del(KEY_IAP);
-        notify('已清空', 'idsGame / idsIAP 已重置', '请重新加购游戏与内购');
+        store.del(KEY_GAME); store.del(KEY_IAP); store.del(KEY_LOCK);
+        notify('已清空', 'idsGame / idsIAP / 锁定 已重置', '请重新加购游戏与内购');
+      });
+      GM_registerMenuCommand('导出 ID（复制到剪贴板）', () => {
+        const g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+        const txt = JSON.stringify({ game: g, iap: t });
+        try { navigator.clipboard.writeText(txt); } catch (e) {}
+        prompt('已复制，可粘贴到另一台浏览器：', txt);
+      });
+      GM_registerMenuCommand('导入 ID（粘贴字符串）', () => {
+        const raw = prompt('粘贴导出的 JSON：');
+        if (!raw) return;
+        try {
+          const o = JSON.parse(raw);
+          if (o.game) store.set(KEY_GAME, o.game);
+          if (o.iap) store.set(KEY_IAP, o.iap);
+          if (o.game && o.iap) store.set(KEY_LOCK, true);
+          notify('已导入', '游戏: ' + (o.game && o.game.productId), '内购: ' + (o.iap && o.iap.productId));
+        } catch (e) { notify('导入失败', 'JSON 格式不对', ''); }
+      });
+      GM_registerMenuCommand('解除锁定（允许重新采集）', () => {
+        store.del(KEY_LOCK);
+        notify('已解除锁定', '可重新加购覆盖', '');
       });
     }
   } catch (e) {}
