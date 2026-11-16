@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.7.4
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.7.4：恢复 4.6.2 三层兜底，首项不匹配时整条覆盖）
+// @version      4.6.2
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.6.2：强制改写层 + iframe.src/form.action hook，修 buynow products 未被替换）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -42,9 +42,8 @@
   }
   function setLicense(code) {
     store.set(KEY_LICENSE, { code: String(code || '').toUpperCase().trim(), at: Date.now() });
-    store.del(KEY_PLAN); planState = null;
   }
-  function clearLicense() { store.del(KEY_LICENSE); store.del(KEY_PLAN); planState = null; }
+  function clearLicense() { store.del(KEY_LICENSE); }
 
   /** 服务端校验（不扣次） */
   async function verifyLicense(code) {
@@ -185,7 +184,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.7.4</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.6.2</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -218,8 +217,8 @@
     panelEl.querySelector('#xfg-refresh').addEventListener('click', refreshPanel);
     panelEl.querySelector('#xfg-clear').addEventListener('click', function () {
       store.del(KEY_GAME); store.del(KEY_IAP); store.del(KEY_LOCK);
-      clearApproved(); store.del(KEY_ORDER_QUEUE); store.del(KEY_PLAN);
-      logLines = []; refreshPanel(); panelAdd('已清空 idsGame/idsIAP/approved/orderQueue/plan');
+      clearApproved(); store.del(KEY_ORDER_QUEUE);
+      logLines = []; refreshPanel(); panelAdd('已清空 idsGame/idsIAP/approved/orderQueue');
     });
     panelEl.querySelector('#xfg-test').addEventListener('click', function () {
       handleCaptureItems([{ productId: 'TESTPROD0001', availabilityId: 'TESTAVAIL01', skuId: '0010' }]);
@@ -233,22 +232,18 @@
       var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
       if (!g || !t) { panelAdd('①② 需要都有值才能交换'); return; }
       store.set(KEY_GAME, t); store.set(KEY_IAP, g);
-      store.del(KEY_PLAN);
       panelAdd('已交换 ①游戏 ↔ ②内购');
       refreshPanel();
-      try { fetchPlan(); } catch (e) {}
     });
     panelEl.querySelector('#xfg-manual').addEventListener('click', function () {
-      var raw = prompt('手动指定【内购】，格式 productId/availabilityId/skuId（例：PRODUCTID/AVAILABILITYID/0010）：');
+      var raw = prompt('手动指定【内购】，格式 productId/availabilityId/skuId（例：9N1Q2GBW6LP0/B21NVMHMJ32K/0010）：');
       if (!raw) return;
       var parts = raw.split('/');
       if (parts.length < 2) { panelAdd('格式错误，需要 productId/availabilityId[/skuId]'); return; }
       var obj = { productId: parts[0].trim(), availabilityId: parts[1].trim(), skuId: (parts[2] || '0010').trim() };
       store.set(KEY_IAP, obj);
-      store.del(KEY_PLAN);
       panelAdd('已手动指定内购: ' + obj.productId + ' / ' + obj.availabilityId);
       refreshPanel();
-      try { fetchPlan(); } catch (e) {}
     });
     panelEl.querySelector('#xfg-mkt').addEventListener('click', function () {
       var cur = String(store.get(KEY_MARKET) || '') || '跟随订单';
@@ -413,6 +408,20 @@
     }
     return { items: out, exact };
   }
+  /**
+   * 记录商品类型线索
+   * 来源：loadCart 的响应里通常带 productKind / ProductKind
+   * 存成 xfg_kind_<productId> = 'iap' | 'game'
+   */
+  function recordKindHint(ids) {
+    if (!ids || !ids.productId) return;
+    var k = ids.productKind || ids.kind;
+    if (!k) return;
+    var tag = /consumable|iap|addon|durable/i.test(k) ? 'iap'
+            : /^game$/i.test(k) ? 'game' : '';
+    if (tag) store.set('xfg_kind_' + ids.productId, tag);
+  }
+
   function fullId(a) { return !!(a && a.productId && a.availabilityId && a.skuId); }
   function sameProduct(a, b) { return !!(a && b && a.productId === b.productId); }
 
@@ -444,7 +453,11 @@
 
     const exact = source === 'request';
 
-    // 商品类型与市场规则由服务端 plan 处理。
+    // 记录商品类型线索：从页面/接口能判断的就记下来，供购物车快照分流用
+    for (const ids of items) {
+      try { recordKindHint(ids); } catch (e) {}
+      try { classifyProduct(ids.productId); } catch (e) {}
+    }
 
     for (const ids of items) {
       if (game && sameProduct(game, ids)) {
@@ -481,171 +494,62 @@
       store.set(KEY_LOCK, true);
       notify('🔒 已锁定采集结果', '游戏+内购齐备', '付款时将自动替换为内购');
       try { autoAlignCaptured(); } catch (e) { log('autoAlign err', e); }
-      // 4.7.0：①② 齐备 → 立刻向服务端要改写指令
-      try { fetchPlan(); } catch (e) { log('fetchPlan err', e); }
     }
     refreshPanel();
   }
 
+  // HAR 实证：buynowui 拿到 products[*] 后会逐字段去 DisplayCatalog 校验，
+  // 只要「productId / skuId / availabilityId」这一组不是同一个 SKU 的合法组合，
+  // 就落到 FailedToHydrate-ProductNotFound。所以必须整条替换，不能留原商品残值。
+  function swapOne(obj, g, t) {
+    if (!obj || !t || !t.productId || !t.availabilityId) return 0;
+    if (String(obj.productId).toUpperCase() !== String(g.productId).toUpperCase()) return 0;
+    var keepQty = obj.quantity;
+    obj.productId = String(t.productId).toUpperCase();
+    obj.availabilityId = String(t.availabilityId).toUpperCase();
+    // skuId 跟着内购走；内购没有 sku 时才沿用原条目
+    if (t.skuId) obj.skuId = String(t.skuId);
+    if (keepQty !== undefined) obj.quantity = keepQty;
+    return 1;
+  }
   // ============================================================
-  // 4.7.0：所有 availabilityId / Gift 档 / 市场归属的表都移到服务端。
-  // 本地不再持有任何产品 ID，下面这些函数只为兼容旧调用点保留空实现。
+  // parentApproval 的 buynow 只接受「可 Gift 的游戏」。
+  // DisplayCatalog 实测（AR）：
+  //   9PKVLFR97PKL / 0010 / B4R8C73NXW2H → Actions 含 Gift ✅
+  //   9PKVLFR97PKL / 0010 / B0N520SW1VC1 → Actions 含 Fulfill，无 Gift ❌
+  // 之前 HAR 里订单写的是 B0N520SW1VC1，buynow 拿它去建付款页就会 ProductNotFound
   // ============================================================
-  function marketOfAvail(aid) { return ''; }
-
-  // ============================================================
-  // 【4.7.0 核心】改写指令（plan）—— 业务规则全在服务端
-  // ------------------------------------------------------------
-  // 脚本只做三件事：
-  //   1. 把面板采集到的 ①② productId 发给 /api/plan
-  //   2. 缓存服务端返回的 ops = [{scope, match, set, fallback}]
-  //   3. 按 ops 覆盖字段（不理解语义，也不知道该换成什么）
-  // ============================================================
-  const KEY_PLAN = 'xfg_plan';
-  let planState = null;      // { ops, meta, sig, at }
-  let planPending = null;    // 进行中的请求
-
-  function planKeyOf() {
-    var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
-    var lc = getLicense();
-    if (!g || !t || !g.productId || !t.productId || !lc) return '';
-    return [String(g.productId).toUpperCase(), String(t.productId).toUpperCase(),
-            targetMarket() || '', lc.code].join('|');
+  var GIFT_AVAIL_BY_MARKET = {
+    '9PKVLFR97PKL': { 'AR': 'B4R8C73NXW2H', 'US': '9ZFDVNQ5H10H' }
+  };
+  function giftAvailFor(pid, mk) {
+    var m = GIFT_AVAIL_BY_MARKET[String(pid).toUpperCase()];
+    if (!m) return '';
+    return m[normMarket(mk)] || '';
   }
 
-  function cachedPlan() {
-    var e = store.get(KEY_PLAN);
-    if (!e || !e.key || !Array.isArray(e.ops)) return null;
-    if (e.key !== planKeyOf()) return null;
-    if (Date.now() - (e.at || 0) > (e.ttl || 600) * 1000) return null;
-    return e;
-  }
-
-  /** 向服务端要 ops（带 Promise 去重） */
-  function fetchPlan() {
-    var key = planKeyOf();
-    if (!key) return Promise.resolve(null);
-    var hit = cachedPlan();
-    if (hit) return Promise.resolve(hit);
-    if (planPending) return planPending;
-
-    var g = store.get(KEY_GAME), t = store.get(KEY_IAP), lc = getLicense();
-    var mk = targetMarket();
-    var payload = {
-      code: lc.code,
-      market: mk,
-      game: { productId: String(g.productId).toUpperCase(), skuId: String(g.skuId || '0010') },
-      iap:  { productId: String(t.productId).toUpperCase(),  skuId: String(t.skuId || '0010') }
-    };
-
-    planPending = fetch(SERVER_BASE + '/api/plan', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      credentials: 'omit',
-      body: JSON.stringify(payload)
-    })
-      .then(function (r) { return r.json().then(function (j) { return { status: r.status, j: j }; }); })
-      .then(function (o) {
-        planPending = null;
-        if (!o.j || !o.j.ok) {
-          var msg = (o.j && o.j.error) || ('HTTP ' + o.status);
-          log('[plan] 获取失败: ' + msg);
-          if (o.status === 401 || o.status === 403) {
-            warnOnce('plan-auth', '拿不到改写指令', msg);
-          }
-          return null;
-        }
-        if (planKeyOf() !== key) {
-          log('[plan] selection changed; discard stale response');
-          return fetchPlan();
-        }
-        var e = { key: key, ops: o.j.ops || [], meta: o.j.meta || {}, sig: o.j.sig, ttl: o.j.ttl || 600, at: Date.now() };
-        store.set(KEY_PLAN, e);
-        planState = e;
-        log('[plan] 已下发 ' + e.ops.length + ' 条指令 · 内购档=' +
-            ((e.meta.iap || {}).availabilityId || '?') + ' gift=' + ((e.meta.iap || {}).gift ? 'Y' : 'N'));
-        refreshPanel();
-        return e;
-      })
-      .catch(function (e) { planPending = null; log('[plan] 请求异常: ' + e.message); return null; });
-
-    return planPending;
-  }
-
-  /**
-   * 通用 ops 解释器 —— 脚本里唯一「改字段」的地方
-   * scope: 'orders' | 'buynow'
-   * match: productId 或 '*'
-   * set:   {productId, availabilityId, skuId}
-   * 返回替换字段数
-   */
-  function applyOps(obj, scope) {
-    var plan = cachedPlan();
-    if (!plan || !Array.isArray(plan.ops)) return { n: 0, set: null };
-    if (!obj || typeof obj !== 'object') return { n: 0, set: null };
-
-    var n = 0, usedSet = null;
-
-    // 先按精确 match 走，最后才用 fallback 的 '*'
-    var exact = plan.ops.filter(function (o) { return o.scope === scope && o.match !== '*'; });
-    var wild  = plan.ops.filter(function (o) { return o.scope === scope && o.match === '*'; });
-
-    (function walk(x, depth) {
-      if (!x || typeof x !== 'object' || depth > 8) return;
-      if (Array.isArray(x)) { x.forEach(function (v) { walk(v, depth + 1); }); return; }
-      var pid = x.productId ? String(x.productId).toUpperCase() : '';
-      if (pid) {
-        for (var i = 0; i < exact.length; i++) {
-          if (String(exact[i].match).toUpperCase() !== pid) continue;
-          var st = exact[i].set || {};
-          Object.keys(st).forEach(function (k) { x[k] = st[k]; });
-          usedSet = st; n++;
-          break;
-        }
-      }
-      Object.keys(x).forEach(function (k) { walk(x[k], depth + 1); });
-    })(obj, 0);
-
-    // 一个都没匹配上 → 用 fallback 覆盖第一个带 productId 的条目
-    if (!n && wild.length) {
-      var st2 = wild[0].set || {};
-      (function fill(x, depth) {
-        if (!x || typeof x !== 'object' || depth > 8) return false;
-        if (Array.isArray(x)) {
-          for (var i = 0; i < x.length; i++) { if (fill(x[i], depth + 1)) return true; }
-          return false;
-        }
-        if (x.productId) {
-          Object.keys(st2).forEach(function (k) { x[k] = st2[k]; });
-          usedSet = st2; n++;
-          return true;
-        }
-        var keys = Object.keys(x);
-        for (var i = 0; i < keys.length; i++) { if (fill(x[keys[i]], depth + 1)) return true; }
-        return false;
-      })(obj, 0);
-      if (n) log('[ops] fallback 覆盖生效');
+  // availabilityId 是按市场分配的；同一 productId+skuId 在不同市场有不同 availabilityId
+  var AVAIL_BY_MARKET = {
+    '9P6LX2D15SD7': {
+      'US': '9XPHQG4220WG',
+      'AR': 'B2XRTR8KPHPM',
+      'JP': '9XJRWRN87FRX'
+    },
+    // 游戏 9PKVLFR97PKL（Neon Apex: Beyond the Limit）
+    // AR: 两个都带 Purchase，B4R8C73NXW2H 额外带 Gift
+    '9PKVLFR97PKL': {
+      'AR': 'B4R8C73NXW2H',
+      'US': '9ZFDVNQ5H10H'
     }
-    return { n: n, set: usedSet };
-  }
-
-  /** 取本次 plan 在某个 scope 下的最终改写目标（用于整条覆盖兜底） */
-  function planSet(scope) {
-    var plan = cachedPlan();
-    if (!plan || !Array.isArray(plan.ops)) {
-      // plan 还没到 → 立刻补拉，并记录，避免静默放行
-      if (!planPending) {
-        log('[plan] 改写时缺少 plan → 立即补拉（当前请求将原样放行）');
-        try { fetchPlan(); } catch (e) {}
-      }
-      return null;
-    }
-    var hit = plan.ops.filter(function (o) { return o.scope === scope; });
-    if (!hit.length) return null;
-    var exact = hit.filter(function (o) { return o.match !== '*'; });
-    var pick = (exact[0] || hit[0]);
-    return pick && pick.set ? pick.set : null;
-  }
+  };
+  var AVAIL_MARKET = {
+    'B2XRTR8KPHPM': 'AR', 'B26TLGNG62BG': 'AR',
+    'B4R8C73NXW2H': 'AR', 'B0N520SW1VC1': 'AR',
+    '9XPHQG4220WG': 'US', '9N3TNRFCDFGJ': 'US',
+    '9ZFDVNQ5H10H': 'US',
+    '9XJRWRN87FRX': 'JP', '9V7LMZ5BPBXJ': 'JP'
+  };
+  function marketOfAvail(aid) { return AVAIL_MARKET[String(aid).toUpperCase()] || ''; }
 
   // ============================================================
   // 市场码归一化：DisplayCatalog / purchase 只认两字母（AR/US/JP）
@@ -711,9 +615,7 @@
   function pageMarket() { var im = inferMarket(); return im ? im.market : ''; }
 
   // 把 availabilityId 归一到目标市场，避免跨市场 404
-  // 4.7.0：市场对齐由服务端补齐，本地原样返回
-  function alignAvail(t, orderMarket) { return t; }
-  function _alignAvailLegacy(t, orderMarket) {
+  function alignAvail(t, orderMarket) {
     if (!t || !t.productId) return t;
     var mk = normMarket(orderMarket);
     if (!mk) return t;
@@ -742,18 +644,82 @@
 
   function swapOrdersJson(bodyStr, g, t) {
     let o; try { o = JSON.parse(bodyStr); } catch (e) { return null; }
-    var r = applyOps(o, 'orders');
-    if (!r.n) return null;
-    return { body: JSON.stringify(o), n: r.n };
+    let n = 0;
+    // 市场必须与内购 ID 所属市场一致，否则 DisplayCatalog 404
+    // 优先：保持订单原 market，把内购 availabilityId 换成该市场对应的值
+    // 目标市场优先（面板/菜单设定），否则跟随订单
+    var tgt = targetMarket();
+    var orderMk = tgt || normMarket(o.market);
+    if (orderMk) t = alignAvail(t, orderMk);
+    if (orderMk && normMarket(o.market) !== orderMk) {
+      log('订单市场 ' + (o.market || '?') + ' -> ' + orderMk);
+      o.market = orderMk;
+      n++;
+    }
+    var lc = (t && t.locale) ? String(t.locale) : '';
+    if (lc && o.language && /^[a-z]{2}-[a-z]{2}$/i.test(lc) && o.language.toLowerCase() !== lc.toLowerCase()) {
+      o.language = lc;
+      n++;
+    }
+    (function walk(x) {
+      if (x === null || typeof x !== 'object') return;
+      if (Array.isArray(x)) { x.forEach(walk); return; }
+      if (x.productId === g.productId) n += swapOne(x, g, t);
+      for (const k in x) if (Object.prototype.hasOwnProperty.call(x, k)) walk(x[k]);
+    })(o);
+    return n > 0 ? { body: JSON.stringify(o), n } : null;
   }
   // ============================================================
-  // 4.7.0：商品类别识别（Game / Consumable）已移到服务端。
-  // 本地不再请求 DisplayCatalog，也不再判断 ①② 是否放反，
-  // 服务端 /api/plan 会直接给出最终字段，脚本只执行。
+  // 商品类别识别（HAR+DisplayCatalog 实证）：
+  //   9P6LX2D15SD7 → ProductType=Consumable（Apex Legends 500 Coins）= 内购
+  //   9PKVLFR97PKL → ProductType=Game（Neon Apex: Beyond the Limit）= 游戏
+  //   buynow 把 Consumable 当成 parentApproval 的商品提交 → FailedToHydrate-ProductNotFound
+  // 所以面板 ①② 放反时必须拦住，不能让它进付款页。
   // ============================================================
-  function kindOf(ids) { return ''; }
-  function checkKindOrder(g, t) { return { ok: true, pending: true }; }
-
+  var KIND_CACHE = {};          // productId -> 'game' | 'consumable' | 'durable' | ''
+  function classifyProduct(pid) {
+    if (!pid) return;
+    pid = String(pid).toUpperCase();
+    if (KIND_CACHE[pid] !== undefined) return;
+    KIND_CACHE[pid] = '';
+    try {
+      fetch('https://displaycatalog.mp.microsoft.com/v7.0/products/' +
+            encodeURIComponent(pid) + '?market=US&languages=en-us&fieldsTemplate=Details',
+            { credentials: 'omit' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (o) {
+          var p = o && o.Product;
+          var t = (p && p.ProductType) ? String(p.ProductType).toLowerCase() : '';
+          KIND_CACHE[pid] = t;
+          var title = '';
+          try { title = p.LocalizedProperties[0].ProductTitle || ''; } catch (e) {}
+          log('[kind] ' + pid + ' → ' + (t || '未知') + (title ? ' · ' + title : ''));
+          store.set('xfg_type_' + pid, { type: t, title: title });
+          refreshPanel();
+        })
+        .catch(function () { KIND_CACHE[pid] = ''; });
+    } catch (e) {}
+  }
+  function kindOf(ids) {
+    if (!ids || !ids.productId) return '';
+    var pid = String(ids.productId).toUpperCase();
+    if (KIND_CACHE[pid] !== undefined) return KIND_CACHE[pid];
+    var rec = store.get('xfg_type_' + pid);
+    if (rec && rec.type) { KIND_CACHE[pid] = rec.type; return rec.type; }
+    classifyProduct(pid);
+    return '';
+  }
+  // ①② 放反检测：①必须是 Game，②必须是 Consumable/Durable
+  function checkKindOrder(g, t) {
+    var kg = kindOf(g), kt = kindOf(t);
+    if (!kg || !kt) return { ok: true, pending: true };
+    if (kg === 'game' && (kt === 'consumable' || kt === 'durable' || kt === 'addon')) return { ok: true };
+    if (kt === 'game' && (kg === 'consumable' || kg === 'durable' || kg === 'addon')) {
+      return { ok: false, swapped: true, kg: kg, kt: kt };
+    }
+    if (kg === 'consumable' || kg === 'durable') return { ok: false, swapped: true, kg: kg, kt: kt };
+    return { ok: true };
+  }
   function unq(s) { try { return decodeURIComponent(s); } catch (e) { return s; } }
   function qq(s) { return encodeURIComponent(s); }
   function swapBuynowForm(bodyStr, g, t) {
@@ -767,12 +733,40 @@
     if (d['products'] === undefined) return null;
     let arr; try { arr = JSON.parse(unq(d['products'])); } catch (e) { return null; }
     if (!Array.isArray(arr)) return null;
-
-    // 4.7.0：改哪些字段由服务端 ops 决定，本地不判断商品类别、不查 Gift 档
-    var r = applyOps(arr, 'buynow');
-    if (!r.n) { log('[buynow] ops 未命中，保持原样'); return null; }
-
+    // buynow 的 market 参数决定目录查询市场；内购 availabilityId 需与之对齐
     const tgt = targetMarket();
+    const formMarket = tgt || normMarket(unq(d['market'] || ''));
+    let tt = t;
+    if (formMarket && t && t.productId) tt = alignAvail(t, formMarket);
+    // ①② 放反 → 拒绝替换（Consumable 当 parentApproval 商品会 ProductNotFound）
+    var ko = checkKindOrder(g, t);
+    if (!ko.ok && ko.swapped) {
+      notify('⚠️ ①② 放反了，已跳过替换',
+        '①是 ' + ko.kg + '，②是 ' + ko.kt,
+        '点面板「交换①②」把游戏放①、内购放②，再重新发起');
+      log('[buynow] kind 放反: ①=' + ko.kg + ' ②=' + ko.kt + ' → 跳过');
+      return null;
+    }
+    // HAR 教训：buynow 用 products[*] 去 DisplayCatalog 校验，
+    //   B0N520SW1VC1（Fulfill，无 Gift）当 parentApproval 商品 → FailedToHydrate-ProductNotFound
+    // 所以这里强制把内购 availabilityId 收敛成「该市场可 Gift 的那一条」。
+    if (formMarket) {
+      var wantGift = giftAvailFor(tt.productId, formMarket);
+      if (wantGift && wantGift !== String(tt.availabilityId).toUpperCase()) {
+        log('[buynow] 内购 availabilityId ' + tt.availabilityId + ' → ' + wantGift + '（' + formMarket + ' 可 Gift 档）');
+        tt = { productId: tt.productId, availabilityId: wantGift, skuId: tt.skuId || '0010', market: formMarket };
+      }
+      var iapMk = marketOfAvail(tt.availabilityId) || normMarket(tt.market || '');
+      if (iapMk && normMarket(formMarket) && iapMk !== normMarket(formMarket)) {
+        notify('⚠️ 内购 ID 与付款市场不符，已跳过替换',
+          '内购 ' + iapMk + ' / 付款 ' + formMarket,
+          '去 /' + (MARKET_LOCALE[iapMk] || iapMk.toLowerCase()) + '/ 重新加购内购');
+        log('[buynow] availabilityId ' + tt.availabilityId + ' 市场=' + iapMk + ' 与 form market=' + formMarket + ' 不符，跳过');
+        return null;
+      }
+    }
+    let cn = 0; arr.forEach(it => { cn += swapOne(it, g, tt); });
+    if (!cn) return null;
     const parts = bodyStr.split('&').map(p => {
       const i = p.indexOf('='); if (i < 0) return p;
       const k = unq(p.slice(0, i));
@@ -780,16 +774,163 @@
       if (k === 'market' && tgt) return p.slice(0, i) + '=' + qq(tgt);
       return p;
     });
-    return { body: parts.join('&'), n: r.n };
+    return { body: parts.join('&'), n: cn };
   }
   // ============================================================
-  // 4.7.0：市场和 availability 解析全部由服务端 /api/plan 完成。
-  // 这些兼容函数不再请求 DisplayCatalog，也不再改变已采集 ID。
-  function resolveCached() { return null; }
-  function resolveItem() { return Promise.resolve(null); }
-  function autoAlignCaptured() { return Promise.resolve(null); }
-  function checkMarket() { return { ok: true, bad: [] }; }
-  function guardMarket() { return true; }
+  // 跨市场自动解析：拿 productId + skuId 去 DisplayCatalog 查目标市场
+  // 选出「有非零价格」的 availabilityId，避开 0.0 的试用/免费条目
+  // 结果缓存，避免重复请求
+  // ============================================================
+  var RESOLVE_CACHE = {};   // key = productId|skuId|market  -> {availabilityId, price, currency}
+  var RESOLVING = {};       // 进行中的请求，防止并发重复
+
+  function catalogUrl(pid, mk) {
+    var lc = 'en-us';
+    var LOC_BY_MARKET = MARKET_LOCALE;
+    if (LOC_BY_MARKET[mk]) lc = LOC_BY_MARKET[mk];
+    return 'https://displaycatalog.mp.microsoft.com/v7.0/products/' +
+      encodeURIComponent(pid) + '?market=' + encodeURIComponent(mk) +
+      '&languages=' + encodeURIComponent(lc) + '&fieldsTemplate=Details';
+  }
+
+  // 从 catalog 响应里挑最佳 availabilityId
+  function pickAvail(o, skuWanted) {
+    var p = o && (o.Product || (o.Payload && o.Payload.Products && o.Payload.Products[0]));
+    if (!p) return null;
+    var best = null;
+    (p.DisplaySkuAvailabilities || []).forEach(function (a) {
+      var sku = a.Sku && a.Sku.SkuId;
+      if (skuWanted && sku && sku !== skuWanted) return;
+      (a.Availabilities || []).forEach(function (av) {
+        var aid = av.AvailabilityId;
+        if (!aid) return;
+        var pr = (av.OrderManagementData || {}).Price || {};
+        var list = Number(pr.ListPrice);
+        if (!isFinite(list)) list = 0;
+        if (list <= 0) return;
+        var acts = Array.isArray(av.Actions) ? av.Actions : [];
+        var canGift = acts.some(function (a) { return /^gift$/i.test(String(a)); });
+        var canBuy = acts.some(function (a) { return /^(purchase|fulfill)$/i.test(String(a)); });
+        var got = { availabilityId: aid, price: list, currency: pr.CurrencyCode || '', skuId: sku, gift: canGift, buy: canBuy };
+        // 家庭组送礼链路优先用可 Gift 的那一条
+        if (!best) best = got;
+        else if (canGift && !best.gift) best = got;
+      });
+    });
+    // 全是 0 价时退而取第一个有 id 的，至少结构完整
+    if (!best) {
+      (p.DisplaySkuAvailabilities || []).forEach(function (a) {
+        if (best) return;
+        var sku = a.Sku && a.Sku.SkuId;
+        if (skuWanted && sku && sku !== skuWanted) return;
+        (a.Availabilities || []).forEach(function (av) {
+          if (best || !av.AvailabilityId) return;
+          var pr = (av.OrderManagementData || {}).Price || {};
+          best = { availabilityId: av.AvailabilityId, price: Number(pr.ListPrice) || 0, currency: pr.CurrencyCode || '', skuId: sku };
+        });
+      });
+    }
+    return best;
+  }
+
+  // 同步读缓存
+  function resolveCached(item, mk) {
+    if (!item || !item.productId || !mk) return null;
+    var k = item.productId + '|' + (item.skuId || '') + '|' + mk;
+    return RESOLVE_CACHE[k] || null;
+  }
+
+  // 异步解析；成功后回写 store 并刷新面板
+  function resolveItem(item, mk, which) {
+    return new Promise(function (resolve) {
+      if (!item || !item.productId || !mk) return resolve(null);
+      var k = item.productId + '|' + (item.skuId || '') + '|' + mk;
+      if (RESOLVE_CACHE[k]) return resolve(RESOLVE_CACHE[k]);
+      if (RESOLVING[k]) return RESOLVING[k].then(resolve, function () { resolve(null); });
+      var p = fetch(catalogUrl(item.productId, mk), { credentials: 'omit' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (o) {
+          var got = pickAvail(o, item.skuId);
+          if (!got) { log('解析失败：' + item.productId + ' 在 ' + mk + ' 无可用条目'); return null; }
+          RESOLVE_CACHE[k] = got;
+          log('解析 ' + which + ' ' + item.productId + ' @' + mk + ' -> ' + got.availabilityId + ' (' + got.price + ' ' + got.currency + ')');
+          return got;
+        })
+        .catch(function (e) { log('解析异常', e); return null; })
+        .then(function (got) {
+          delete RESOLVING[k];
+          if (!got) return null;
+          // 回写 store，让后续替换直接用
+          var cur = store.get(which === '游戏' ? KEY_GAME : KEY_IAP);
+          if (cur && cur.productId === item.productId) {
+            cur.availabilityId = got.availabilityId;
+            if (got.skuId) cur.skuId = got.skuId;
+            cur.market = mk;
+            store.set(which === '游戏' ? KEY_GAME : KEY_IAP, cur);
+            notify('🔄 已按 ' + mk + ' 自动纠正' + which, got.availabilityId,
+              got.price ? (got.price + ' ' + got.currency) : '');
+            refreshPanel();
+          }
+          resolve(got);
+        });
+      RESOLVING[k] = p;
+    });
+  }
+
+  // 采集后立刻尝试对齐目标市场；返回 true 表示当前 ID 已可用（或无需处理）
+  function autoAlignCaptured() {
+    var mk = targetMarket();
+    if (!mk) return;
+    var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+    var jobs = [];
+    if (g && g.productId && normMarket(g.market) !== mk) jobs.push(resolveItem(g, mk, '游戏'));
+    if (t && t.productId && normMarket(t.market) !== mk) jobs.push(resolveItem(t, mk, '内购'));
+    if (!jobs.length) return;
+    Promise.all(jobs).then(function () {
+      var c = checkMarket([
+        { which: '游戏', id: store.get(KEY_GAME) },
+        { which: '内购', id: store.get(KEY_IAP) }
+      ], mk);
+      if (!c.ok) {
+        c.bad.forEach(function (b) {
+          panelAdd('⚠️ ' + b.which + ' 仍属于 ' + b.real + '，无法在 ' + mk + ' 找到对应条目');
+        });
+      }
+    });
+  }
+
+  // 采集结果与目标市场不符时，明确提示应去哪加购，而不是带着错 ID 去下单
+  var warnedMarket = '';
+  function guardMarket(g, t) {
+    var tgt = targetMarket();
+    if (!tgt) return true;
+    // 先看有没有已解析好的市场版本，有就直接用，避免拦下本该成功的请求
+    var rg = resolveCached(g, tgt), rt = resolveCached(t, tgt);
+    if (rg && rg.availabilityId !== g.availabilityId) {
+      g.availabilityId = rg.availabilityId; g.market = tgt;
+      store.set(KEY_GAME, g); log('替换前套用已解析游戏ID', rg.availabilityId);
+    }
+    if (rt && rt.availabilityId !== t.availabilityId) {
+      t.availabilityId = rt.availabilityId; if (rt.skuId) t.skuId = rt.skuId; t.market = tgt;
+      store.set(KEY_IAP, t); log('替换前套用已解析内购ID', rt.availabilityId);
+    }
+    var c = checkMarket([{ which: '游戏', id: g }, { which: '内购', id: t }], tgt);
+    if (c.ok) { warnedMarket = ''; return true; }
+    // 还没解析过就开始解析，下次请求就能用上
+    try { resolveItem(g, tgt, '游戏'); resolveItem(t, tgt, '内购'); } catch (e) {}
+    var key = tgt + '|' + c.bad.map(function (b) { return b.which + b.real; }).join(',');
+    if (warnedMarket !== key) {
+      warnedMarket = key;
+      var loc = MARKET_LOCALE[tgt] || tgt.toLowerCase();
+      var msgs = c.bad.map(function (b) {
+        return b.which + ' 属于 ' + b.real + '（' + b.aid + '）';
+      }).join('；');
+      notify('⚠️ 地区不匹配，已跳过替换', '目标 ' + tgt + '，实际：' + msgs,
+        '请到 www.xbox.com/' + loc + '/ 重新加购游戏与内购，或把「市场」改成 ID 所属地区');
+      log('地区校验失败，阻止替换', c.bad);
+    }
+    return false;
+  }
 
   // ============================================================
   // 批准标记（对照手机端稳定的 approve_flag.js）：
@@ -967,7 +1108,7 @@
       //
       // 之前 4.5.4 起把这里改成硬 no-op，理由是 HAR 里订单是内购、
       // buynow 是游戏、两边不一致 → ProductNotFound。但真正不一致的是
-      // availabilityId（原档无 Gift），不是「该不该换」。
+      // availabilityId（B0N520SW1VC1 无 Gift），不是「该不该换」。
       // 现在 availabilityId 已收敛到可 Gift 档，就按手机端语义恢复：
       //   已批准 → 换；未批准（子号发起申请阶段）→ 不换。
       // ============================================================
@@ -1178,28 +1319,38 @@
   //   闸门只影响日志和提示，不再影响是否替换。
   // ============================================================
   function hardSwapOrders(bodyStr) {
+    var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+    if (!g || !t || !t.productId || !t.availabilityId) return null;
     var o; try { o = JSON.parse(bodyStr); } catch (e) { return null; }
-    var r = applyOps(o, 'orders');
-    var set = (r.n && r.set) ? r.set : planSet('orders');
-
-    // 兜底：orders 里没有一条能对上 match 时，按 4.6.2 语义改写 items[0]
-    if (!r.n && set && Array.isArray(o.items) && o.items.length) {
-      var it = o.items[0];
-      if (it && it.productId) {
-        it.productId = String(set.productId).toUpperCase();
-        it.availabilityId = String(set.availabilityId).toUpperCase();
-        if (set.skuId) it.skuId = String(set.skuId);
-        r = { n: 1, set: set };
-        log('[hard] orders 首项未命中 → 改写 items[0]');
+    var mk = normMarket(o.market) || targetMarket();
+    var tt = t;
+    // 内购在目标市场收敛到可 Gift 档
+    var want = mk ? giftAvailFor(t.productId, mk) : '';
+    if (want) tt = { productId: t.productId, availabilityId: want, skuId: t.skuId || '0010', market: mk };
+    var n = 0;
+    var pidGame = String(g.productId).toUpperCase();
+    var pidIap = String(tt.productId).toUpperCase();
+    (function walk(x) {
+      if (x === null || typeof x !== 'object') return;
+      if (Array.isArray(x)) { x.forEach(walk); return; }
+      var pid = x.productId ? String(x.productId).toUpperCase() : '';
+      // 目标：订单里凡是「游戏」或「内购」的商品，统一收敛到内购可 Gift 档
+      if (pid && (pid === pidGame || pid === pidIap)) {
+        x.productId = pidIap;
+        x.availabilityId = String(tt.availabilityId).toUpperCase();
+        if (tt.skuId) x.skuId = String(tt.skuId);
+        n++;
       }
-    }
-    if (!r.n) return null;
-    log('[ops] orders 替换 ' + r.n + ' 处 → ' +
-        (set ? set.productId + '/' + set.availabilityId : '?'));
+      for (var k in x) if (Object.prototype.hasOwnProperty.call(x, k)) walk(x[k]);
+    })(o);
+    if (!n) return null;
+    log('[hard] orders 强制替换 → ' + tt.productId + '/' + tt.availabilityId + ' 字段:' + n);
     return JSON.stringify(o);
   }
 
   function hardSwapBuynow(bodyStr) {
+    var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+    if (!g || !t || !t.productId || !t.availabilityId) return null;
     var d = {};
     bodyStr.split('&').forEach(function (p) {
       var i = p.indexOf('='); if (i < 0) return;
@@ -1208,30 +1359,35 @@
     if (d['products'] === undefined) return null;
     var arr; try { arr = JSON.parse(unq(d['products'])); } catch (e) { return null; }
     if (!Array.isArray(arr) || !arr.length) return null;
-
-    var r = applyOps(arr, 'buynow');
-    var set = (r.n && r.set) ? r.set : planSet('buynow');
-
-    // 4.6.2 的兜底：一首项不是游戏/内购（对不上任何 match）→ 整条覆盖，不再挑
-    if (!r.n) {
-      if (!set) { log('[hard] buynow 无可用 set，放弃'); return null; }
-      arr = [{
-        productId: String(set.productId).toUpperCase(),
-        skuId: String(set.skuId || '0010'),
-        availabilityId: String(set.availabilityId).toUpperCase()
-      }];
-      r = { n: 1, set: set };
-      log('[hard] buynow 首项未命中 → 整条覆盖');
+    var mk = normMarket(unq(d['market'] || '')) || targetMarket();
+    var tt = t;
+    var want = mk ? giftAvailFor(t.productId, mk) : '';
+    if (want) tt = { productId: t.productId, availabilityId: want, skuId: t.skuId || '0010', market: mk };
+    var n = 0;
+    var pidGame2 = String(g.productId).toUpperCase();
+    var pidIap2 = String(tt.productId).toUpperCase();
+    arr.forEach(function (it) {
+      if (!it || !it.productId) return;
+      var pid = String(it.productId).toUpperCase();
+      if (pid !== pidGame2 && pid !== pidIap2) return;
+      it.productId = pidIap2;
+      it.availabilityId = String(tt.availabilityId).toUpperCase();
+      if (tt.skuId) it.skuId = String(tt.skuId);
+      n++;
+    });
+    if (!n) {
+      // 首项不是游戏（可能已经是内购）→ 直接整条覆盖，不再挑
+      arr = [{ productId: String(tt.productId).toUpperCase(), skuId: String(tt.skuId || '0010'), availabilityId: String(tt.availabilityId).toUpperCase() }];
+      n = 1;
+      log('[hard] buynow 首项非游戏，整条覆盖');
     }
-
     var out = bodyStr.split('&').map(function (p) {
       var i = p.indexOf('='); if (i < 0) return p;
       var k = unq(p.slice(0, i));
       if (k === 'products') return p.slice(0, i) + '=' + qq(JSON.stringify(arr));
       return p;
     }).join('&');
-    log('[ops] buynow 替换 ' + r.n + ' 处 → ' +
-        (set ? set.productId + '/' + set.availabilityId : '?'));
+    log('[hard] buynow 强制替换 → ' + tt.productId + '/' + tt.availabilityId + ' 字段:' + n);
     return out;
   }
 
@@ -1246,11 +1402,6 @@
     var r = null;
     try { r = maybeSwap(url, bodyStr); } catch (e) { log('maybeSwap err', e); }
     if (r) return r;
-    if (!cachedPlan()) {
-      log('[hard] plan 未就绪 → 本次请求不替换（已触发补拉，下一次生效）');
-      try { fetchPlan(); } catch (e) {}
-      return null;
-    }
     log('[hard] 精细闸门未命中 → 启用强制替换 ' + (isOrders ? 'orders' : 'buynow'));
     if (isOrders) return hardSwapOrders(bodyStr);
     return hardSwapBuynow(bodyStr);
@@ -1372,6 +1523,9 @@
       // 强制阶段：有 purchaseOrderId 或 approve 标记任一即可，不再卡双重条件
       if (!isFinalPayStage(poid)) log('[form] 无 poid 也无 approve，仍强制替换');
 
+      const g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+      if (!g || !t || !t.productId || !t.availabilityId) return 0;
+
       // 找 products 输入框
       let inp = null;
       for (let i = 0; i < form.elements.length; i++) {
@@ -1380,27 +1534,41 @@
       }
       if (!inp) return 0;
 
+      // 取 market 字段做 availabilityId 对齐
+      let mk = '';
+      for (let i = 0; i < form.elements.length; i++) {
+        const el = form.elements[i];
+        if (el && el.name === 'market') { mk = String(el.value || '').toUpperCase(); break; }
+      }
+      const tgt = targetMarket();
+      if (tgt) mk = tgt;
+      let tt = t;
+      if (mk) tt = alignAvail(t, mk);
+      if (mk) {
+        var wantGift2 = giftAvailFor(t.productId, mk);
+        if (wantGift2) tt = { productId: t.productId, availabilityId: wantGift2, skuId: (tt.skuId || t.skuId || '0010'), market: mk };
+      }
+      // 付款页市场与内购 availabilityId 所属市场不一致 → 下单必报错，宁可不换
+      if (mk) {
+        var iapMk = marketOfAvail(tt.availabilityId) || normMarket(tt.market || '');
+        if (iapMk && iapMk !== normMarket(mk)) {
+          notify('⚠️ 付款页市场不符，已跳过替换', '页面 ' + mk + ' / 内购 ' + iapMk,
+            '请到 /' + (MARKET_LOCALE[iapMk] || iapMk.toLowerCase()) + '/ 重新加购内购');
+          return 0;
+        }
+      }
+
       let arr;
       try { arr = JSON.parse(inp.value); } catch (e) { return 0; }
       if (!Array.isArray(arr)) return 0;
-
-      // 4.7.4：字段怎么改由服务端 ops 决定，本地不再有 ID 表
-      let r = applyOps(arr, 'buynow');
-      let tt = (r.n && r.set) ? r.set : planSet('buynow');
-
-      // 4.6.2 兜底：首项对不上任何 match → 整条覆盖成服务端给的最终商品
-      if (!r.n) {
-        if (!tt) { log('[form] ops 未命中且无 set，保持原样'); return 0; }
-        arr = [{
-          productId: String(tt.productId).toUpperCase(),
-          skuId: String(tt.skuId || '0010'),
-          availabilityId: String(tt.availabilityId).toUpperCase()
-        }];
-        r = { n: 1, set: tt };
+      let n = 0;
+      arr.forEach(it => { n += swapOne(it, g, tt); });
+      if (!n) {
+        // 首项已经不是游戏（例如页面已用内购）→ 整条强制覆盖成内购
+        arr = [{ productId: String(tt.productId).toUpperCase(), skuId: String(tt.skuId || '0010'), availabilityId: String(tt.availabilityId).toUpperCase() }];
+        n = 1;
         log('[form] 首项非游戏 → 整条覆盖为内购');
       }
-      const tgt = targetMarket();
-      let mk = tgt || '';
 
       inp.value = JSON.stringify(arr);
       if (tgt) {
@@ -1413,8 +1581,8 @@
         } catch (e) {}
       }
       log('✅ buynow 表单已改写 market=' + (mk || '?'), arr);
-      notify('✅ 付款页已换内购', tt.productId + ' · sku ' + tt.skuId, 'market ' + (mk || '?'));
-      return r.n;
+      notify('✅ safety付款页已换内购', tt.productId + ' · sku ' + tt.skuId, 'market ' + (mk || '?'));
+      return n;
     } catch (e) { log('patchBuynowForm err', e); return 0; }
   }
 
@@ -1430,18 +1598,34 @@
     try {
       var s2 = String(u || '');
       if (!/\/store\/purchase\/buynowui\/buynow/i.test(s2)) return u;
+      var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+      if (!g || !t || !t.productId || !t.availabilityId) return u;
       var m = s2.match(/[?&]products=([^&]*)/);
       if (!m) return u;
       var arr; try { arr = JSON.parse(decodeURIComponent(m[1])); } catch (e) { return u; }
-      if (!Array.isArray(arr) || !arr.length) return u;
-
-      var r = applyOps(arr, 'buynow');
-      if (!r.n) return u;
-
+      if (!Array.isArray(arr)) return u;
+      var mk = (s2.match(/[?&]market=([^&]*)/) || [])[1] || targetMarket();
+      mk = normMarket(decodeURIComponent(mk)) || targetMarket();
+      var want = mk ? giftAvailFor(t.productId, mk) : '';
+      var tt = want ? { productId: t.productId, availabilityId: want, skuId: t.skuId || '0010' } : t;
+      var n = 0;
+      var pg = String(g.productId).toUpperCase(), pi = String(tt.productId).toUpperCase();
+      arr.forEach(function (it) {
+        if (!it || !it.productId) return;
+        var pid = String(it.productId).toUpperCase();
+        if (pid !== pg && pid !== pi) return;
+        it.productId = pi;
+        it.availabilityId = String(tt.availabilityId).toUpperCase();
+        if (tt.skuId) it.skuId = String(tt.skuId);
+        n++;
+      });
+      if (!n) {
+        arr = [{ productId: String(tt.productId).toUpperCase(), skuId: String(tt.skuId || '0010'), availabilityId: String(tt.availabilityId).toUpperCase() }];
+        n = 1;
+      }
       var out = s2.replace(/([?&]products=)[^&]*/, '$1' + encodeURIComponent(JSON.stringify(arr)));
-      log('[ops] URL 改写 products ' + r.n + ' 处 → ' +
-          (r.set ? r.set.productId + '/' + r.set.availabilityId : '?'));
-      notify('✅ 付款 URL 已换内购', r.set ? r.set.productId : '', r.set ? r.set.availabilityId : '');
+      log('[hard] URL 改写 products → ' + tt.productId + '/' + tt.availabilityId + ' (' + n + ')');
+      notify('✅ 付款 URL 已换内购', tt.productId, tt.availabilityId);
       return out;
     } catch (e) { log('rewriteBuynowUrl err', e); return u; }
   }
@@ -1518,7 +1702,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.7.4 injected (服务端 plan + 4.6.2 三层兜底：精细/强制/整条覆盖)');
+  log('v4.6.2 injected (强制改写层 + iframe/action hook + orders/buynow 一致替换)');
 
   // ============================================================
   // 菜单
@@ -1609,7 +1793,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.7.4', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.6.2', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1631,5 +1815,5 @@
     return _origDel(k);
   };
 
-  log("v4.7.4 injected (licensed build)");
+  log("v4.6.2 injected (licensed build)");
 })();
