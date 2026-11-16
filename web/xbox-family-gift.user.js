@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.9.4
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.4：市场完全取自②内购页 + iframe 不重复显示面板）
+// @version      4.9.5
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.5：付款页自动补拉 plan + 存储诊断）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -203,7 +203,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.9.4</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.9.5</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -274,7 +274,8 @@
     });
 
     refreshPanel();
-    panelAdd('脚本已注入页面世界(@grant none)');
+    var gmOk = (typeof GM_setValue === 'function' && typeof GM_getValue === 'function');
+    panelAdd('脚本已注入 · 存储=' + (gmOk ? 'GM 跨域 ✅' : 'localStorage ⚠️ 不跨域'));
   }
 
   // ============================================================
@@ -449,6 +450,11 @@
         return '<div style="margin-top:2px;font-size:11px;color:#7fd">授权：剩余 <b>' + licenseState.remaining + '</b> 次</div>';
       })();
     updateButtons();
+
+    // 两个 ID 都齐了就确保 plan 在拉（付款页/新标签页也能自愈）
+    if (g && t && g.productId && t.productId && getLicense() && !cachedPlan() && !planPending) {
+      try { fetchPlan(); } catch (e) {}
+    }
   }
 
   // ============================================================
@@ -746,7 +752,14 @@
    */
   function planTarget() {
     var plan = cachedPlan();
-    if (!plan || !Array.isArray(plan.ops)) return null;
+    if (!plan || !Array.isArray(plan.ops)) {
+      // 付款页是另一个域名/标签，缓存可能为空或 key 不匹配 → 立刻补拉
+      if (!planPending) {
+        log('[plan] 缓存无 plan → 立即向服务端拉取');
+        try { fetchPlan(); } catch (e) { log('fetchPlan err', e); }
+      }
+      return null;
+    }
     // 优先 buynow 的精确档，其次通配档
     var hit = plan.ops.filter(function (o) { return o.scope === 'buynow'; });
     if (!hit.length) hit = plan.ops.filter(function (o) { return o.scope === 'orders'; });
@@ -1664,7 +1677,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.9.4 injected (市场取自② + 面板单实例)');
+  log('v4.9.5 injected (付款页自愈拉plan)');
 
   // ============================================================
   // 菜单
@@ -1755,7 +1768,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.9.4', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.9.5', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1777,5 +1790,5 @@
     return _origDel(k);
   };
 
-  log("v4.9.4 injected (licensed build)");
+  log("v4.9.5 injected (licensed build)");
 })();
