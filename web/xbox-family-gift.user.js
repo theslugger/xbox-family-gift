@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.9.0
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.0：手动获取①游戏/②内购ID（读页面URL）+ 4.6.2 替换本体）
+// @version      4.9.1
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.1：手动获取ID + 面板大字显示 + 替换全程日志）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -185,7 +185,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.9.0</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.9.1</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -329,44 +329,44 @@
     var st = panelEl.querySelector('#xfg-state');
     if (!st) return;
     var g = store.get(KEY_GAME), t = store.get(KEY_IAP), lk = store.get(KEY_LOCK);
+    var m = planMeta();
+    var iapTitle = (m && m.iap && m.iap.title) ? m.iap.title : '';
+    var iapPrice = (m && m.iap && m.iap.price) ? (m.iap.price + ' ' + (m.iap.currency || '')) : '';
+
+    function slotLine(label, rec, title, price, hint) {
+      var has = !!(rec && rec.productId);
+      var bg = has ? '#0e2f12' : '#2f1212';
+      var bd = has ? '#2f7a3a' : '#7a2f2f';
+      return '<div style="padding:7px 9px;border-radius:7px;background:' + bg + ';border:1px solid ' + bd + ';margin-bottom:6px">' +
+        '<div style="color:#9fe6a8;font-weight:700;font-size:11px;letter-spacing:.5px">' + label + '</div>' +
+        (has
+          ? '<div style="color:#fff;font-family:ui-monospace,Menlo,monospace;font-size:14px;font-weight:700;letter-spacing:.6px;margin-top:2px;line-height:1.3">' + esc(rec.productId) + '</div>'
+            + (title ? '<div style="color:#8fe;font-size:11.5px;font-weight:600;margin-top:1px">' + esc(title) + (price ? ' · ' + esc(price) : '') + '</div>' : '')
+            + '<div style="color:#7a8;font-size:10.5px;margin-top:1px">sku ' + esc(rec.skuId || '-') + (rec.market ? ' · ' + esc(rec.market) : '') + '</div>'
+          : '<div style="color:#f88;font-size:11.5px;margin-top:2px">' + hint + '</div>')
+        + '</div>';
+    }
+
     st.innerHTML =
-      '<div style="padding:5px 7px;border-radius:6px;background:' + (g ? '#0d2a0d' : '#2a0d0d') + ';margin-bottom:4px">' +
-        '<b style="color:#7fd">① 游戏</b> ' +
-        (g ? '<code style="color:#fff;font-size:12px">' + esc(g.productId) + '</code>'
-             + '<div style="color:#888;font-size:10.5px">avail ' + esc(g.availabilityId || '-') + ' · sku ' + esc(g.skuId || '-') + (g.market ? ' · ' + esc(g.market) : '') + '</div>'
-           : '<span style="color:#f77">未采集</span>') +
-      '</div>' +
-      '<div style="padding:5px 7px;border-radius:6px;background:' + (t ? '#0d2a0d' : '#2a0d0d') + '">' +
-        '<b style="color:#7fd">② 内购</b> ' +
-        (t ? '<code style="color:#fff;font-size:12px">' + esc(t.productId) + '</code>'
-             + '<div style="color:#888;font-size:10.5px">avail ' + esc(t.availabilityId || '-') + ' · sku ' + esc(t.skuId || '-') + (t.market ? ' · ' + esc(t.market) : '') + '</div>'
-           : '<span style="color:#f77">未采集</span>') +
-      '</div>' +
+      slotLine('① 游戏（会被替换掉）', g, '', '', '未获取 — 打开游戏页，点下方「获取①游戏ID」') +
+      slotLine('② 内购（最终买这个）', t, iapTitle, iapPrice, '未获取 — 打开金币页，点下方「获取②内购ID」') +
       (function () {
-      var pt = planTarget();
-      if (!pt) return '<div style="margin-top:5px;color:#888;font-size:11px">替换目标: 等待服务端 plan</div>';
-      return '<div style="margin-top:5px;color:#8fe;font-size:11px">替换目标: <code>' + esc(pt.productId) + '</code> / ' + esc(pt.availabilityId) + '</div>';
-    })() +
-    '<div style="margin-top:4px">状态: ' + (lk ? '<b style="color:#ff0">🔒 已锁定</b>' : '<span style="color:#888">采集中</span>') +
-        (isApproved() ? ' <b style="color:#7fd">· 已批准✅</b>' : ' <span style="color:#888">· 待批准</span>') +
-        ' <span style="color:#888">· orderId ' + (function(){var o=latestOrder();return o?String(o.id).slice(0,8):'无';})() + '</span>' + '</div>' +
+        var pt = planTarget();
+        if (!pt) return '<div style="color:#888;font-size:11px;margin-top:2px">替换目标：等待服务端计算</div>';
+        return '<div style="color:#8fe;font-size:11.5px;font-weight:600;margin-top:2px">替换目标：'
+             + esc(pt.productId) + ' / ' + esc(pt.availabilityId) + '</div>';
+      })() +
+      '<div style="margin-top:5px;font-size:11px;color:#aaa">状态：'
+        + (lk ? '<b style="color:#ff0">🔒 已锁定</b>' : '待获取')
+        + (isApproved() ? ' · <b style="color:#7fd">已批准</b>' : ' · 待批准')
+      + '</div>' +
       (function () {
         var lic = getLicense();
-        if (!lic) return '<div style="margin-top:2px;color:#f77">授权: <b>未激活</b> — 点「授权」输入</div>';
-        if (!licenseState.valid) return '<div style="margin-top:2px;color:#f77">授权: <b>校验中/异常</b></div>';
-        return '<div style="margin-top:2px;color:#7fd">授权: 剩余 <b>' + licenseState.remaining + '</b> 次</div>';
-      })() +
-      (function () {
-        var tgt = targetMarket();
-        if (!tgt) return '<div style="margin-top:2px;color:#888">市场: 跟随订单</div>';
-        var c = (g && t) ? checkMarket([{ which: '游戏', id: g }, { which: '内购', id: t }], tgt) : { ok: true, bad: [] };
-        var loc = MARKET_LOCALE[tgt] || tgt.toLowerCase();
-        var col = c.ok ? '#7fd' : '#f77';
-        var extra = c.ok ? '' : '<br><span style="color:#f77">中 ' + c.bad.map(function (b) { return b.which + '是' + b.real; }).join('、') + '，去 /' + loc + '/ 重采</span>';
-        return '<div style="margin-top:2px;color:' + col + '">市场: <b>' + tgt + '</b> (/' + loc + '/)' + extra + '</div>';
+        if (!lic) return '<div style="margin-top:2px;font-size:11px;color:#f88">授权：未激活</div>';
+        if (!licenseState.valid) return '<div style="margin-top:2px;font-size:11px;color:#f88">授权：校验中/异常</div>';
+        return '<div style="margin-top:2px;font-size:11px;color:#7fd">授权：剩余 <b>' + licenseState.remaining + '</b> 次</div>';
       })();
   }
-
 
   // ============================================================
   // 采集
@@ -591,6 +591,13 @@
     return plan.ops
       .filter(function (o) { return o.scope === scope && o.match !== '*'; })
       .map(function (o) { return String(o.match).toUpperCase(); });
+  }
+
+  /** 服务端回传的商品信息（标题/价格），用于面板核对 */
+  function planMeta() {
+    var plan = cachedPlan();
+    if (!plan || !plan.meta) return null;
+    return plan.meta;
   }
 
   /**
@@ -1336,7 +1343,10 @@
       const famSig = /AMCFamilySafety|parentApproval/i.test(caller + '|' + scen + '|' + (F['cssOverride'] || '') + '|' + (F['parentHostName'] || ''));
 
       // ---- 只认「主号批准后的付款页」，缺一个都别动 ----
-      if (!famSig) { log('[form] 非家庭组链路 → 不替换'); return 0; }
+      if (!famSig) {
+        log('[form] 非家庭组链路 → 不替换 (caller=' + caller + ' scenario=' + scen + ')');
+        return 0;
+      }
       if (!poid) {
         var lo = latestOrder();
         if (lo && lo.id) {
@@ -1360,7 +1370,7 @@
         const el = form.elements[i];
         if (el && el.name === 'products') { inp = el; break; }
       }
-      if (!inp) return 0;
+      if (!inp) { log('[form] 表单里没有 products 字段 → 跳过'); return 0; }
 
       let arr;
       try { arr = JSON.parse(inp.value); } catch (e) { return 0; }
@@ -1373,16 +1383,20 @@
       // ============================================================
       const tt = planTarget();
       if (!tt) {
-        log('[form] 服务端未下发替换目标（plan 未就绪）');
+        log('[form] ❌ 服务端未下发替换目标（plan 未就绪）');
+        panelAdd('❌ 付款页未替换：plan 未就绪');
         return 0;
       }
       const matches = planMatches('buynow');
+      log('[form] 准备替换 · 页面 products=' + JSON.stringify(arr) +
+          ' · 目标=' + tt.productId + '/' + tt.availabilityId +
+          ' · matches=' + JSON.stringify(matches));
       let n = 0;
       arr.forEach(it => { n += swapOne(it, matches, tt); });
       if (!n) {
         arr = [{ productId: tt.productId, skuId: tt.skuId, availabilityId: tt.availabilityId }];
         n = 1;
-        log('[form] 首项非游戏 → 整条覆盖为内购');
+        log('[form] 首项未命中 → 整条覆盖为内购');
       }
 
       const tgt = targetMarket();
@@ -1398,7 +1412,8 @@
           if (form.action) form.action = form.action.replace(/([?&]market=)[A-Za-z-]+/, '$1' + tgt);
         } catch (e) {}
       }
-      log('✅ buynow 表单已改写 market=' + (mk || '?'), arr);
+      log('✅ buynow 表单已改写 · products=' + JSON.stringify(arr) + ' · market=' + (mk || '?'));
+      panelAdd('✅ 付款页替换 ' + n + ' 项 → ' + tt.productId + '/' + tt.availabilityId);
       notify('✅ safety付款页已换内购', tt.productId + ' · sku ' + tt.skuId, 'market ' + (mk || '?'));
       return n;
     } catch (e) { log('patchBuynowForm err', e); return 0; }
@@ -1510,7 +1525,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.9.0 injected (手动抓ID + 4.6.2 替换本体)');
+  log('v4.9.1 injected (手动抓ID + 面板大字 + 替换日志)');
 
   // ============================================================
   // 菜单
@@ -1601,7 +1616,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.9.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.9.1', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1623,5 +1638,5 @@
     return _origDel(k);
   };
 
-  log("v4.9.0 injected (licensed build)");
+  log("v4.9.1 injected (licensed build)");
 })();
