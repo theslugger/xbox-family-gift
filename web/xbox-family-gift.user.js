@@ -487,20 +487,6 @@
     refreshPanel();
   }
 
-  // HAR 实证：buynowui 拿到 products[*] 后会逐字段去 DisplayCatalog 校验，
-  // 只要「productId / skuId / availabilityId」这一组不是同一个 SKU 的合法组合，
-  // 就落到 FailedToHydrate-ProductNotFound。所以必须整条替换，不能留原商品残值。
-  function swapOne(obj, g, t) {
-    if (!obj || !t || !t.productId || !t.availabilityId) return 0;
-    if (String(obj.productId).toUpperCase() !== String(g.productId).toUpperCase()) return 0;
-    var keepQty = obj.quantity;
-    obj.productId = String(t.productId).toUpperCase();
-    obj.availabilityId = String(t.availabilityId).toUpperCase();
-    // skuId 跟着内购走；内购没有 sku 时才沿用原条目
-    if (t.skuId) obj.skuId = String(t.skuId);
-    if (keepQty !== undefined) obj.quantity = keepQty;
-    return 1;
-  }
   // ============================================================
   // 4.7.0：所有 availabilityId / Gift 档 / 市场归属的表都移到服务端。
   // 本地不再持有任何产品 ID，下面这些函数只为兼容旧调用点保留空实现。
@@ -598,7 +584,7 @@
     if (!plan || !Array.isArray(plan.ops)) return { n: 0, set: null };
     if (!obj || typeof obj !== 'object') return { n: 0, set: null };
 
-    var n = 0, usedSet = null, matched = {};
+    var n = 0, usedSet = null;
 
     // 先按精确 match 走，最后才用 fallback 的 '*'
     var exact = plan.ops.filter(function (o) { return o.scope === scope && o.match !== '*'; });
@@ -611,8 +597,6 @@
       if (pid) {
         for (var i = 0; i < exact.length; i++) {
           if (String(exact[i].match).toUpperCase() !== pid) continue;
-          if (matched[pid]) break;
-          matched[pid] = 1;
           var st = exact[i].set || {};
           Object.keys(st).forEach(function (k) { x[k] = st[k]; });
           usedSet = st; n++;
