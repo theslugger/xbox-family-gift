@@ -1,0 +1,17 @@
+{
+  "name": "xfg-webapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Xbox 家庭组内购送礼 网页服务",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

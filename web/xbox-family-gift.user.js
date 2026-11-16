@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.5.1
+// @version      4.5.2
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -863,21 +863,12 @@
     //   否则（子号发起的普通购买）保持原样，避免变成充值型购买
     // ============================================================
     if (/purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders/.test(url)) {
-      var isFamilyOrder = /AMCFamilySafety/i.test(bodyStr) || /parentApproval/i.test(bodyStr);
-      // 诊断：把请求体关键信息打出来，便于定位为什么被判定为家庭组
-      try {
-        var oo = JSON.parse(bodyStr);
-        var ctx = (oo.clientContext && oo.clientContext.client) || '';
-        log('[orders] client=' + ctx +
-            ' market=' + (oo.market || '?') +
-            ' items=' + ((oo.items || []).length) +
-            ' 首项=' + ((oo.items && oo.items[0] && oo.items[0].productId) || '?') +
-            ' 判定家庭组=' + isFamilyOrder);
-      } catch (e) {
-        log('[orders] 解析失败，原文前120字: ' + String(bodyStr).slice(0, 120));
-      }
-      // 保险：只要订单里的商品就是已记录的游戏，就说明这是「发起游戏购买」阶段
-      // 不管带不带家庭组标记，都不能在这里换成内购，否则会变成充值型购买
+      // ============================================================
+      // 拦截：只要订单里的商品就是已记录的游戏，说明这是「子号发起购买申请」
+      //   阶段（或批准时创建游戏订单），这里绝不能换成内购，
+      //   否则发起的就是充值型购买，家庭组看到的也会是金币而不是游戏。
+      //   真正的替换点只有一个：主号最后付款的 buynow 表单。
+      // ============================================================
       var hasGame = false, hasIap = false;
       try {
         var parsed = JSON.parse(bodyStr);
@@ -886,12 +877,17 @@
           if (g && it.productId === g.productId) hasGame = true;
           if (t && it.productId === t.productId) hasIap = true;
         });
-      } catch (e) {}
+      } catch (e) {
+        log('[orders] 解析失败，原文前120字: ' + String(bodyStr).slice(0, 120));
+      }
 
       if (hasGame && !hasIap) {
-        log('orders：订单里是游戏本身，属于发起购买阶段 → 不替换，等主号付款页');
+        log('orders：订单里是游戏本身 → 属于发起购买申请阶段，不替换（等主号付款页）');
         return null;
       }
+
+      var isFamilyOrder = /AMCFamilySafety/i.test(bodyStr) || /parentApproval/i.test(bodyStr);
+      log('[orders] 游戏项=' + hasGame + ' 内购项=' + hasIap + ' 判定家庭组=' + isFamilyOrder);
       if (!isFamilyOrder) {
         log('orders：非家庭组批准场景，保持原样（等主号付款页再换）');
         return null;

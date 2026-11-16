@@ -1,0 +1,32 @@
+name: xfg
+
+services:
+  xfg:
+    build: .
+    image: xfg-webapp:latest
+    container_name: xfg-app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3001"
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      HOST: 0.0.0.0
+      ADMIN_TOKEN: 424984368bddb3a2c0b533024b634428
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    networks:
+      - default
+      - caddy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  default:
+  caddy:
+    external: true
+    name: allreal-websearch_websearch

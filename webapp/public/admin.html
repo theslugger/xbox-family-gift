@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>授权码管理 · XFG</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--txt:#e6edf3;--dim:#8b949e;
+  --green:#3fb950;--blue:#58a6ff;--amber:#d29922;--red:#f85149}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);
+  font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:28px 20px 80px}
+h1{font-size:20px;margin:0 0 6px}
+.sub{color:var(--dim);font-size:13px;margin-bottom:22px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px}
+label{display:block;font-size:12px;color:var(--dim);margin:10px 0 5px}
+input,button{font:inherit;color:var(--txt)}
+input{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:9px 11px;outline:none;width:100%}
+input:focus{border-color:var(--blue)}
+button{background:#21262d;border:1px solid var(--line);border-radius:8px;padding:9px 14px;cursor:pointer}
+button:hover:not(:disabled){background:#30363d}
+button.primary{background:#238636;border-color:#2ea043;color:#fff;font-weight:600}
+button.primary:hover:not(:disabled){background:#2ea043}
+button:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+.row>div{flex:1;min-width:110px}
+.stats{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+.stat{background:#0d1117;border:1px solid var(--line);border-radius:9px;padding:10px 16px;min-width:100px}
+.stat .n{font-size:20px;font-weight:700;color:var(--blue)}
+.stat .l{font-size:11px;color:var(--dim)}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-weight:500;font-size:11.5px}
+td.mono{font-family:ui-monospace,Menlo,monospace}
+.pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;border:1px solid var(--line)}
+.pill.ok{color:var(--green);border-color:#23863666;background:#2386361a}
+.pill.off{color:var(--red);border-color:#f8514966;background:#f851491a}
+.pill.done{color:var(--dim);border-color:#30363d;background:#0d1117}
+#result{margin-top:14px;background:#010409;border:1px solid var(--line);border-radius:9px;
+  padding:12px;font-family:ui-monospace,Menlo,monospace;font-size:12px;max-height:280px;overflow:auto;display:none}
+#result .c{color:var(--green);font-weight:600;letter-spacing:1px}
+.note{margin-top:14px;padding:12px 14px;border-radius:9px;border:1px solid #9e6a0355;
+  background:#9e6a030f;font-size:12px;color:#d4b17a}
+.err{color:var(--red);font-size:12.5px;margin-top:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>授权码管理</h1>
+  <div class="sub">XFG · 一次完整赠礼扣 1 次 · 不绑定账号</div>
+
+  <div class="card">
+    <div class="row">
+      <div style="flex:2">
+        <label>管理口令</label>
+        <input id="token" type="password" placeholder="ADMIN_TOKEN">
+      </div>
+      <div style="flex:0 0 auto">
+        <button class="primary" id="btnLogin" style="padding:10px 20px">进入</button>
+      </div>
+    </div>
+    <div class="err" id="loginErr"></div>
+  </div>
+
+  <div id="main" style="display:none">
+    <div class="stats" id="stats"></div>
+
+    <div class="card">
+      <h3 style="margin:0 0 4px;font-size:14px">生成授权码</h3>
+      <div class="row">
+        <div><label>数量</label><input id="gCount" type="number" value="10" min="1" max="500"></div>
+        <div><label>每个可用次数</label><input id="gUses" type="number" value="1" min="1" max="9999"></div>
+        <div><label>有效期（天，0=永久）</label><input id="gDays" type="number" value="0" min="0"></div>
+        <div style="flex:2"><label>备注</label><input id="gNote" placeholder="例如：淘宝订单 12345"></div>
+        <div style="flex:0 0 auto"><button class="primary" id="btnIssue">生成</button></div>
+      </div>
+      <div id="result"></div>
+      <div class="note">
+        生成后请立即复制，<b>服务端只保存哈希，无法再次查看明文</b>。文件里只留后 4 位供核对。
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="margin-bottom:12px">
+        <div style="flex:3"><label>搜索（备注或后4位）</label><input id="q" placeholder=""></div>
+        <div style="flex:0 0 auto"><button id="btnRefresh">刷新</button></div>
+      </div>
+      <div style="overflow:auto">
+        <table>
+          <thead><tr>
+            <th>尾号</th><th>备注</th><th>总量</th><th>已用</th><th>剩余</th>
+            <th>状态</th><th>最后使用</th><th>操作</th>
+          </tr></thead>
+          <tbody id="rows"><tr><td colspan="8" style="color:#8b949e">加载中…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  let TOKEN = '';
+
+  async function api(path, body) {
+    const opt = {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { 'content-type': 'application/json', 'x-admin-token': TOKEN }
+    };
+    if (body !== undefined) opt.body = JSON.stringify(body);
+    const r = await fetch(path, opt);
+    let j;
+    try { j = await r.json(); } catch (e) { throw new Error('HTTP ' + r.status); }
+    if (!j.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    return j.data;
+  }
+
+  const fmt = t => {
+    if (!t) return '—';
+    const d = new Date(t);
+    return d.toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+  };
+
+  function renderStats(s) {
+    $('#stats').innerHTML =
+      '<div class="stat"><div class="n">' + s.codes + '</div><div class="l">授权码数</div></div>' +
+      '<div class="stat"><div class="n">' + s.totalUses + '</div><div class="l">总次数</div></div>' +
+      '<div class="stat"><div class="n">' + s.usedUses + '</div><div class="l">已用</div></div>' +
+      '<div class="stat"><div class="n">' + s.remaining + '</div><div class="l">剩余</div></div>' +
+      '<div class="stat"><div class="n">' + s.active + '</div><div class="l">可用码</div></div>';
+  }
+
+  function renderRows(rows) {
+    if (!rows.length) {
+      $('#rows').innerHTML = '<tr><td colspan="8" style="color:#8b949e">暂无数据</td></tr>';
+      return;
+    }
+    $('#rows').innerHTML = rows.map(r => {
+      const st = r.disabled ? '<span class="pill off">已停用</span>'
+        : r.remaining <= 0 ? '<span class="pill done">已用完</span>'
+        : '<span class="pill ok">可用</span>';
+      return '<tr>' +
+        '<td class="mono">' + esc(r.tail) + '</td>' +
+        '<td>' + esc(r.note || '—') + '</td>' +
+        '<td>' + r.total + '</td>' +
+        '<td>' + r.used + '</td>' +
+        '<td><b style="color:' + (r.remaining > 0 ? '#3fb950' : '#8b949e') + '">' + r.remaining + '</b></td>' +
+        '<td>' + st + '</td>' +
+        '<td class="mono" style="font-size:11.5px">' + fmt(r.lastUsedAt) + '</td>' +
+        '<td><button data-h="' + r.hash12 + '" data-a="' + (r.disabled ? 'on' : 'off') + '" ' +
+          'style="padding:3px 9px;font-size:11.5px">' + (r.disabled ? '恢复' : '停用') + '</button></td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  async function loadList() {
+    const q = encodeURIComponent($('#q').value.trim());
+    const d = await api('/api/admin/licenses?q=' + q);
+    renderStats(d.stats);
+    renderRows(d.rows);
+  }
+
+  $('#btnLogin').addEventListener('click', async () => {
+    TOKEN = $('#token').value.trim();
+    if (!TOKEN) return;
+    $('#loginErr').textContent = '';
+    try {
+      await loadList();
+      $('#main').style.display = '';
+      $('#loginErr').textContent = '';
+      try { sessionStorage.setItem('xfg_admin', TOKEN); } catch (e) {}
+    } catch (e) {
+      $('#loginErr').textContent = '登录失败: ' + e.message;
+    }
+  });
+
+  $('#btnRefresh').addEventListener('click', () => loadList().catch(e => alert(e.message)));
+  $('#q').addEventListener('input', () => {
+    clearTimeout(window.__qt);
+    window.__qt = setTimeout(() => loadList().catch(() => {}), 350);
+  });
+
+  $('#btnIssue').addEventListener('click', async () => {
+    const body = {
+      count: Number($('#gCount').value),
+      uses: Number($('#gUses').value),
+      days: Number($('#gDays').value),
+      note: $('#gNote').value.trim()
+    };
+    $('#btnIssue').disabled = true;
+    try {
+      const list = await api('/api/admin/licenses/issue', body);
+      const box = $('#result');
+      box.style.display = '';
+      const txt = list.map(x => x.code).join('\n');
+      box.innerHTML =
+        '<div style="color:#3fb950;margin-bottom:8px">生成 ' + list.length + ' 个，每个 ' +
+        list[0].uses + ' 次。请立即复制（服务端只存哈希，关掉就查不回来了）：</div>' +
+        '<textarea id="codeOut" readonly style="width:100%;min-height:' +
+          Math.min(240, 26 + list.length * 22) + 'px;background:#010409;border:1px solid #30363d;' +
+          'border-radius:8px;padding:10px;color:#3fb950;font-family:ui-monospace,Menlo,monospace;' +
+          'font-size:13px;line-height:1.7;resize:vertical">' + esc(txt) + '</textarea>' +
+        '<div style="margin-top:8px;display:flex;gap:8px">' +
+          '<button id="btnCopyAll" style="padding:6px 14px;font-size:12.5px">复制全部</button>' +
+          '<button id="btnSelectAll" style="padding:6px 14px;font-size:12.5px">全选</button>' +
+        '</div>';
+      // 生成后自动选中，方便直接 Ctrl+C
+      const ta = $('#codeOut');
+      setTimeout(() => { try { ta.focus(); ta.select(); } catch (e) {} }, 60);
+      $('#btnSelectAll').onclick = function () {
+        try { ta.focus(); ta.select(); } catch (e) {}
+      };
+      $('#btnCopyAll').onclick = function () {
+        try {
+          ta.focus(); ta.select();
+          const ok = document.execCommand && document.execCommand('copy');
+          if (ok) { this.textContent = '已复制 ✓'; this.style.color = '#3fb950'; return; }
+        } catch (e) {}
+        // 回退到 clipboard API
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(txt).then(
+            () => { $('#btnCopyAll').textContent = '已复制 ✓'; },
+            () => { try { ta.focus(); ta.select(); } catch (e) {} alert('已选中，请按 Ctrl+C / Cmd+C'); }
+          );
+        } else {
+          try { ta.focus(); ta.select(); } catch (e) {}
+          alert('已选中，请按 Ctrl+C / Cmd+C');
+        }
+      };
+      await loadList();
+    } catch (e) {
+      alert('生成失败: ' + e.message);
+    } finally {
+      $('#btnIssue').disabled = false;
+    }
+  });
+
+  $('#rows').addEventListener('click', async ev => {
+    const btn = ev.target.closest('button[data-h]');
+    if (!btn) return;
+    const hash12 = btn.dataset.h;
+    const disable = btn.dataset.a === 'off';
+    // 服务端按尾部4位+哈希前12位定位；这里用列表里的 tail 反查
+    const row = [...document.querySelectorAll('#rows tr')].find(tr =>
+      tr.querySelector('td.mono') && tr.querySelector('td.mono').textContent ===
+      btn.closest('tr').querySelector('td.mono').textContent);
+    // 简化：直接用 tail 调用
+    const tail = btn.closest('tr').querySelector('td.mono').textContent;
+    try {
+      await api('/api/admin/licenses/update-by-tail', { tail, disabled: disable });
+      await loadList();
+    } catch (e) { alert('操作失败: ' + e.message); }
+  });
+
+  // 自动填入口令
+  try {
+    const saved = sessionStorage.getItem('xfg_admin');
+    if (saved) { $('#token').value = saved; $('#btnLogin').click(); }
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>

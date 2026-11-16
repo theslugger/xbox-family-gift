@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Xbox 家庭组内购送礼</title>
+<style>
+:root{
+  --bg:#0d1117; --card:#161b22; --line:#30363d; --txt:#e6edf3; --dim:#8b949e;
+  --green:#3fb950; --blue:#58a6ff; --amber:#d29922; --red:#f85149; --purple:#bc8cff;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--bg);color:var(--txt);
+  font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:28px 20px 80px}
+h1{font-size:22px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+h1 .tag{font-size:11px;background:#1f6feb33;color:var(--blue);border:1px solid #1f6feb66;
+  padding:2px 8px;border-radius:20px;font-weight:500}
+.sub{color:var(--dim);font-size:13px;margin-bottom:24px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px}
+.card h2{font-size:15px;margin:0 0 14px;display:flex;align-items:center;gap:8px}
+.card h2 .n{width:22px;height:22px;border-radius:50%;background:#1f6feb33;color:var(--blue);
+  display:grid;place-items:center;font-size:12px;font-weight:600}
+label{display:block;font-size:12px;color:var(--dim);margin:12px 0 6px}
+input,select,textarea,button{font:inherit;color:var(--txt)}
+input,select,textarea{
+  width:100%;background:#0d1117;border:1px solid var(--line);border-radius:8px;
+  padding:9px 11px;outline:none;transition:border-color .15s
+}
+input:focus,select:focus,textarea:focus{border-color:var(--blue)}
+textarea{resize:vertical;min-height:60px;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+button{
+  background:#21262d;border:1px solid var(--line);border-radius:8px;padding:9px 14px;
+  cursor:pointer;transition:.15s;font-weight:500
+}
+button:hover:not(:disabled){background:#30363d;border-color:#484f58}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:#238636;border-color:#2ea043;color:#fff}
+button.primary:hover:not(:disabled){background:#2ea043}
+button.warn{background:#9e6a03;border-color:#bb8009;color:#fff}
+button.warn:hover:not(:disabled){background:#bb8009}
+button.ghost{background:transparent}
+.row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.row>button{flex:1;min-width:110px}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:3px 10px;
+  border-radius:20px;border:1px solid var(--line);background:#0d1117}
+.pill.ok{color:var(--green);border-color:#23863666;background:#2386361a}
+.pill.wait{color:var(--amber);border-color:#9e6a0366;background:#9e6a031a}
+.pill.err{color:var(--red);border-color:#f8514966;background:#f851491a}
+.pill.run{color:var(--blue);border-color:#1f6feb66;background:#1f6feb1a}
+.info{margin-top:12px;padding:12px;border-radius:8px;background:#0d1117;border:1px solid var(--line);
+  font-size:12.5px;line-height:1.7}
+.info .k{color:var(--dim);display:inline-block;min-width:74px}
+.info .v{color:var(--txt);font-family:ui-monospace,Menlo,monospace}
+.price{color:var(--green);font-weight:600}
+.bad{color:var(--red)}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim)}
+#log{margin-top:16px;background:#010409;border:1px solid var(--line);border-radius:10px;
+  padding:12px;height:150px;overflow:auto;font-family:ui-monospace,Menlo,monospace;
+  font-size:11.5px;line-height:1.7;color:#7d8590}
+#log .t{color:#484f58}
+#log .ok{color:var(--green)}
+#log .er{color:var(--red)}
+.note{margin-top:20px;padding:14px 16px;border-radius:10px;border:1px solid #9e6a0355;
+  background:#9e6a030f;font-size:12.5px;color:#d4b17a}
+.note b{color:var(--amber)}
+.roomcode{font-family:ui-monospace,Menlo,monospace;font-size:26px;letter-spacing:5px;
+  color:var(--blue);font-weight:700}
+.steps{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap}
+.step{flex:1;min-width:80px;text-align:center;font-size:11px;padding:7px 4px;border-radius:7px;
+  background:#0d1117;border:1px solid var(--line);color:var(--dim)}
+.step.on{background:#1f6feb1a;border-color:#1f6feb66;color:var(--blue)}
+.step.dn{background:#2386361a;border-color:#23863666;color:var(--green)}
+hr{border:0;border-top:1px solid var(--line);margin:18px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Xbox 家庭组内购送礼 <span class="tag">自动替换版</span></h1>
+  <div class="sub">子号选内购 → 自动配一个低价游戏 → 主号批准 → 付款页换成内购</div>
+
+  <div class="steps" id="steps">
+    <div class="step" data-s="created">① 创建</div>
+    <div class="step" data-s="child_ready">② 选好商品</div>
+    <div class="step" data-s="requested">③ 已发起</div>
+    <div class="step" data-s="approved">④ 已批准</div>
+    <div class="step" data-s="paying">⑤ 付款中</div>
+    <div class="step" data-s="done">⑥ 完成</div>
+  </div>
+
+  <div class="grid">
+    <!-- 左：子号侧 -->
+    <div class="card">
+      <h2><span class="n">子</span>子号侧 · 选择要送的东西</h2>
+
+      <label>目标地区</label>
+      <select id="market">
+        <option value="">— 请选择 —</option>
+        <option value="AR">AR · 阿根廷 (ARS)</option>
+        <option value="US">US · 美国 (USD)</option>
+        <option value="JP">JP · 日本 (JPY)</option>
+        <option value="TR">TR · 土耳其 (TRY)</option>
+        <option value="NG">NG · 尼日利亚 (NGN)</option>
+        <option value="BR">BR · 巴西 (BRL)</option>
+        <option value="MX">MX · 墨西哥 (MXN)</option>
+        <option value="RU">RU · 俄罗斯 (RUB)</option>
+        <option value="IN">IN · 印度 (INR)</option>
+      </select>
+
+      <label>要赠送的内购（粘贴商品链接或 ProductId）</label>
+      <textarea id="iapInput" placeholder="https://www.xbox.com/es-ar/games/store/xxx/9P6LX2D15SD7&#10;或直接填 9P6LX2D15SD7"></textarea>
+      <div class="row">
+        <button id="btnIap">查询内购</button>
+      </div>
+      <div class="info" id="iapInfo" style="display:none"></div>
+
+      <hr>
+
+      <label>用来替换的游戏（自动挑一个没用过的低价游戏）</label>
+      <div class="row" style="margin-top:0">
+        <button id="btnPick" class="primary">自动挑游戏</button>
+        <button id="btnPickAgain" class="ghost">换一个</button>
+      </div>
+      <div class="info" id="gameInfo" style="display:none"></div>
+
+      <div class="row">
+        <button id="btnCreate">创建房间</button>
+      </div>
+      <div class="info" id="roomInfo" style="display:none"></div>
+    </div>
+
+    <!-- 右：主号侧 -->
+    <div class="card">
+      <h2><span class="n">主</span>主号侧 · 批准与付款</h2>
+
+      <label>房间码（子号那边显示）</label>
+      <input id="joinCode" placeholder="例如 K7M2QP" maxlength="6" style="text-transform:uppercase;letter-spacing:3px;font-family:ui-monospace,Menlo,monospace">
+
+      <div class="row" style="margin-top:12px">
+        <button id="btnJoin" class="primary">加入房间</button>
+        <button id="btnRefresh" class="ghost">刷新</button>
+      </div>
+
+      <div class="info" id="syncInfo" style="margin-top:14px">
+        <div><span class="k">状态</span><span class="pill wait" id="statePill">未连接</span></div>
+      </div>
+
+      <!-- 第一步：装替换助手（常驻，不依赖房间） -->
+      <div class="note" style="margin-top:14px;border-color:#1f6feb55;background:#1f6feb0f">
+        <b style="color:#58a6ff">第一步 · 装上替换助手</b>
+        <div style="margin-top:8px;line-height:1.9;color:#c9d1d9">
+          把下面这个绿色按钮 <b>拖到浏览器书签栏</b>（不是点击它）。<br>
+          之后在微软付款页点一下书签，商品会自动换成金币。<br>
+          <span style="color:#8b949e">还没创建房间也能先装，装一次永久有效。</span>
+        </div>
+        <div style="margin-top:10px">
+          <a id="bmDrag" href="#" style="display:inline-block;padding:10px 18px;background:#238636;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">📌 XFG 替换助手</a>
+          <button id="btnCopyBookmark" class="ghost" style="margin-left:8px;padding:9px 14px">复制代码</button>
+        </div>
+        <div id="bmHint" style="margin-top:8px;font-size:11.5px;color:#8b949e">正在生成…</div>
+      </div>
+
+      <div id="taskBox" style="display:none">
+        <hr>
+        <div class="info">
+          <div><span class="k">内购</span><span class="v" id="tIap">—</span></div>
+          <div><span class="k">游戏</span><span class="v" id="tGame">—</span></div>
+          <div><span class="k">地区</span><span class="v" id="tMarket">—</span></div>
+          <div><span class="k">订单号</span><span class="v" id="tOrder">—</span></div>
+          <div id="tPriceRow" style="display:none"><span class="k">应支付</span><span class="price" id="tPrice">—</span></div>
+        </div>
+
+        <div class="row">
+          <button id="btnOpenFamily" class="primary" style="flex:2">打开主号批准页</button>
+          <button id="btnOpenFamilyTab" class="ghost">新标签页</button>
+        </div>
+        <div class="row">
+          <button id="btnApproved" class="primary">已批准</button>
+          <button id="btnPaying" class="warn">进入付款</button>
+          <button id="btnDone" class="primary">已完成</button>
+          <button id="btnFail" class="ghost">标记失败</button>
+        </div>
+
+        <div class="note" style="margin-top:14px">
+          点「打开主号批准页」会弹出独立窗口（不是 iframe，微软禁止嵌入），
+          在里面找到待批准的物品点<b>批准</b>，回来后点「已批准」。
+        </div>
+      </div>
+
+      <div class="note">
+        <b>说明</b>：账号登录始终在你自己的浏览器里完成，本服务只做商品查询与状态同步，
+        不接触、不保存任何账号凭证或登录票据。
+      </div>
+    </div>
+  </div>
+
+  <div id="log"></div>
+</div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const logEl = $('#log');
+  const FAMILY_URL = 'https://account.microsoft.com/family/home';
+
+  function log(msg, cls) {
+    const t = new Date().toTimeString().slice(0, 8);
+    const line = document.createElement('div');
+    line.innerHTML = '<span class="t">' + t + '</span> <span class="' + (cls || '') + '">' + escapeHtml(msg) + '</span>';
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+  async function api(path, body) {
+    const r = await fetch(path, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    let j;
+    try { j = await r.json(); } catch (e) { throw new Error('服务端返回异常 HTTP ' + r.status); }
+    if (!j.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    return j.data;
+  }
+  const money = (n, c) => {
+    const num = Number(n);
+    const s = num.toLocaleString('en-US', { minimumFractionDigits: num % 1 ? 2 : 0, maximumFractionDigits: 2 });
+    return s + ' ' + (c || '');
+  };
+
+  // ---------------- 状态 ----------------
+  let iap = null, game = null, room = null, ws = null, wsSeq = 0, joinedRoomId = null;
+  let bmCode = '';
+
+  // ---------------- 渲染 ----------------
+  function renderIap() {
+    const box = $('#iapInfo');
+    if (!iap) return box.style.display = 'none';
+    const trial = iap.isTrial ? '<div class="bad">⚠ 这是 0 价条目，不能用作内购</div>' : '';
+    box.style.display = '';
+    box.innerHTML =
+      '<div><span class="k">名称</span><b>' + escapeHtml(iap.title) + '</b></div>' +
+      '<div><span class="k">类型</span>' + escapeHtml(iap.productKind) +
+        (iap.productKind === 'Consumable' ? ' <span class="pill ok">内购 ✓</span>' : ' <span class="pill err">不是内购</span>') + '</div>' +
+      '<div><span class="k">价格</span><span class="price">' + money(iap.price, iap.currency) + '</span></div>' +
+      '<div><span class="k">地区</span>' + iap.market + '</div>' +
+      '<div><span class="k">PID</span><span class="v">' + iap.productId + '</span></div>' +
+      '<div><span class="k">AID</span><span class="v">' + iap.availabilityId + '</span></div>' + trial;
+  }
+  function renderGame() {
+    const box = $('#gameInfo');
+    if (!game) return box.style.display = 'none';
+    box.style.display = '';
+    box.innerHTML =
+      '<div><span class="k">名称</span><b>' + escapeHtml(game.title) + '</b></div>' +
+      '<div><span class="k">类型</span>' + escapeHtml(game.productKind) +
+        (game.productKind === 'Game' ? ' <span class="pill ok">游戏 ✓</span>' : ' <span class="pill err">不是游戏</span>') + '</div>' +
+      '<div><span class="k">标价</span>' + money(game.price, game.currency) + '</div>' +
+      '<div><span class="k">PID</span><span class="v">' + game.productId + '</span></div>' +
+      '<div><span class="k">AID</span><span class="v">' + game.availabilityId + '</span></div>';
+  }
+  function renderRoom() {
+    const box = $('#roomInfo');
+    if (!room) return box.style.display = 'none';
+    box.style.display = '';
+    box.innerHTML =
+      '<div><span class="k">房间码</span><span class="roomcode">' + room.id + '</span></div>' +
+      '<div class="mono" style="margin-top:6px">同浏览器另一个标签页可用；换浏览器就复制这串码过去。</div>';
+  }
+
+  const STATUS_TEXT = {
+    created: '已创建', child_ready: '商品已选好', requested: '子号已发起',
+    approved: '主号已批准', paying: '付款中', done: '已完成', failed: '失败'
+  };
+  const STATUS_CLASS = {
+    created: 'wait', child_ready: 'run', requested: 'run',
+    approved: 'ok', paying: 'ok', done: 'ok', failed: 'err'
+  };
+  const STATUS_ORDER = ['created', 'child_ready', 'requested', 'approved', 'paying', 'done'];
+
+  function applyState(s) {
+    const pill = $('#statePill');
+    pill.textContent = STATUS_TEXT[s.status] || s.status;
+    pill.className = 'pill ' + (STATUS_CLASS[s.status] || '');
+    document.querySelectorAll('.step').forEach(el => {
+      el.classList.remove('on', 'dn');
+      const cur = STATUS_ORDER.indexOf(s.status);
+      const idx = STATUS_ORDER.indexOf(el.dataset.s);
+      if (idx === cur) el.classList.add('on');
+      else if (idx < cur && cur >= 0) el.classList.add('dn');
+    });
+    if (s.iap || s.game) {
+      $('#taskBox').style.display = '';
+      $('#tIap').textContent = s.iap ? (s.iap.title + ' · ' + s.iap.productId + ' / ' + s.iap.availabilityId) : '—';
+      $('#tGame').textContent = s.game ? (s.game.title + ' · ' + s.game.productId) : '—';
+      $('#tMarket').textContent = s.market || '—';
+      $('#tOrder').textContent = (s.childInfo && s.childInfo.orderId) || '—';
+      if (s.iap && s.iap.price) {
+        $('#tPriceRow').style.display = '';
+        $('#tPrice').textContent = money(s.iap.price, s.iap.currency);
+      }
+    }
+    if (s.error) log('房间错误: ' + s.error, 'er');
+  }
+
+  // ---------------- WebSocket ----------------
+  function wsUrl() {
+    return (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws';
+  }
+  function send(obj) {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+    else log('连接未就绪，消息未发送', 'er');
+  }
+  function connect(roomId, onOpen) {
+    const mySeq = ++wsSeq;
+    if (ws) { try { ws.onclose = null; ws.onerror = null; ws.close(); } catch (e) {} }
+    joinedRoomId = roomId;
+    const sock = new WebSocket(wsUrl());
+    ws = sock;
+    sock.onopen = () => {
+      if (mySeq !== wsSeq) return;
+      log('已连接实时通道');
+      sock.send(JSON.stringify({ type: 'join', roomId }));
+      if (onOpen) onOpen();
+    };
+    sock.onmessage = ev => {
+      if (mySeq !== wsSeq) return;
+      let m;
+      try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.type === 'state') applyState(m.data);
+      else if (m.type === 'error') log('服务端: ' + m.error, 'er');
+    };
+    sock.onclose = () => {
+      if (mySeq !== wsSeq) return;
+      $('#statePill').textContent = '连接已断开';
+      log('实时通道已断开，点「刷新」重连');
+    };
+    sock.onerror = () => {
+      if (mySeq !== wsSeq) return;
+      log('实时通道错误', 'er');
+    };
+  }
+
+  // ---------------- 书签（页面加载即生成） ----------------
+  async function refreshBookmarklet(roomId) {
+    try {
+      const qs = roomId ? ('?room=' + encodeURIComponent(roomId)) : '';
+      const d = await api('/api/bookmarklet' + qs);
+      bmCode = d.code;
+      const drag = $('#bmDrag');
+      drag.href = d.code;
+      drag.onclick = e => {
+        e.preventDefault();
+        $('#bmHint').innerHTML = '<span style="color:#d29922">请把按钮<b>拖到书签栏</b>，不要点击</span>';
+        return false;
+      };
+      $('#bmHint').innerHTML = roomId
+        ? '<span style="color:#3fb950">已绑定房间 <b>' + d.room + '</b> · ' + d.length + ' 字符</span>'
+        : '<span style="color:#8b949e">通用版（未绑房间）。创建房间后会自动换成绑定版。</span>';
+      log(roomId ? '书签已绑定房间 ' + d.room : '书签已就绪（未绑房间）', 'ok');
+    } catch (e) {
+      $('#bmHint').innerHTML = '<span style="color:#f85149">生成失败: ' + escapeHtml(e.message) + '</span>';
+      log('书签生成失败: ' + e.message, 'er');
+    }
+  }
+  $('#btnCopyBookmark').addEventListener('click', async () => {
+    if (!bmCode) return log('书签还在生成中', 'er');
+    try {
+      await navigator.clipboard.writeText(bmCode);
+      log('已复制。新建书签，把代码粘到「网址」栏', 'ok');
+    } catch (e) {
+      prompt('手动全选复制下面这段：', bmCode);
+    }
+  });
+
+  // ---------------- 子号侧 ----------------
+  try {
+    const saved = localStorage.getItem('xfg_market');
+    if (saved) $('#market').value = saved;
+  } catch (e) {}
+  $('#market').addEventListener('change', e => {
+    try { localStorage.setItem('xfg_market', e.target.value); } catch (er) {}
+    iap = null; game = null;
+    renderIap(); renderGame();
+  });
+
+  $('#btnIap').addEventListener('click', async () => {
+    const input = $('#iapInput').value.trim();
+    const market = $('#market').value;
+    if (!market) return log('请先选择目标地区', 'er');
+    if (!input) return log('请粘贴内购链接或 ProductId', 'er');
+    $('#btnIap').disabled = true;
+    log('查询内购中…');
+    try {
+      iap = await api('/api/lookup', { input, market });
+      log('内购解析成功: ' + iap.title + ' · ' + money(iap.price, iap.currency), 'ok');
+      if (iap.productKind !== 'Consumable') log('注意：该商品不是 Consumable（内购）', 'er');
+      renderIap();
+    } catch (e) {
+      iap = null; renderIap();
+      log('查询失败: ' + e.message, 'er');
+    } finally {
+      $('#btnIap').disabled = false;
+    }
+  });
+
+  async function pickGame() {
+    const market = $('#market').value;
+    if (!market) return log('请先选择目标地区', 'er');
+    $('#btnPick').disabled = $('#btnPickAgain').disabled = true;
+    log('正在挑选未使用过的低价游戏…');
+    try {
+      const exclude = game ? [game.productId] : [];
+      const list = await api('/api/pick-game', { market, count: 5, exclude });
+      if (!list.length) { log('没找到可用游戏，换地区或稍后再试', 'er'); return; }
+      game = list[0];
+      log('已选游戏: ' + game.title + ' · ' + money(game.price, game.currency) +
+          '（另有 ' + (list.length - 1) + ' 个备选）', 'ok');
+      renderGame();
+    } catch (e) {
+      log('挑游戏失败: ' + e.message, 'er');
+    } finally {
+      $('#btnPick').disabled = $('#btnPickAgain').disabled = false;
+    }
+  }
+  $('#btnPick').addEventListener('click', pickGame);
+  $('#btnPickAgain').addEventListener('click', pickGame);
+
+  $('#btnCreate').addEventListener('click', async () => {
+    const market = $('#market').value;
+    if (!market) return log('请先选择目标地区', 'er');
+    if (!iap) return log('请先查询内购', 'er');
+    if (!game) return log('请先挑一个游戏', 'er');
+    $('#btnCreate').disabled = true;
+    try {
+      room = await api('/api/room', { market });
+      log('房间已创建: ' + room.id, 'ok');
+      renderRoom();
+      $('#joinCode').value = room.id;
+      refreshBookmarklet(room.id);
+      connect(room.id, () => {
+        send({ type: 'set-iap', data: iap });
+        send({ type: 'set-game', data: game });
+        log('已把内购与游戏写入房间');
+      });
+    } catch (e) {
+      log('创建房间失败: ' + e.message, 'er');
+    } finally {
+      $('#btnCreate').disabled = false;
+    }
+  });
+
+  // ---------------- 主号侧 ----------------
+  $('#btnJoin').addEventListener('click', () => {
+    const id = $('#joinCode').value.trim().toUpperCase();
+    if (!id) return log('请输入房间码', 'er');
+    connect(id);
+    refreshBookmarklet(id);
+  });
+  $('#btnRefresh').addEventListener('click', async () => {
+    const id = ($('#joinCode').value.trim() || joinedRoomId || '').toUpperCase();
+    if (!id) return log('请输入房间码', 'er');
+    try {
+      const s = await api('/api/room/' + id);
+      applyState(s);
+      log('已刷新房间 ' + id, 'ok');
+    } catch (e) { log('刷新失败: ' + e.message, 'er'); }
+  });
+
+  $('#btnOpenFamily').addEventListener('click', () => {
+    const w = 1000, h = 820;
+    const left = Math.max(0, (screen.width - w) / 2);
+    const top = Math.max(0, (screen.height - h) / 2);
+    const win = window.open(FAMILY_URL, 'xfgFamily',
+      'width=' + w + ',height=' + h + ',left=' + left + ',top=' + top + ',resizable=yes,scrollbars=yes');
+    if (!win) log('弹窗被拦截，请用「新标签页」或允许本页弹窗', 'er');
+    else {
+      log('已打开主号批准页。在其中点「批准」后回来点「已批准」。');
+      try { win.focus(); } catch (e) {}
+    }
+  });
+  $('#btnOpenFamilyTab').addEventListener('click', () => {
+    window.open(FAMILY_URL, '_blank', 'noopener');
+    log('已在新标签页打开主号批准页');
+  });
+  $('#btnApproved').addEventListener('click', () => { send({ type: 'approved' }); log('已标记：主号已批准'); });
+  $('#btnPaying').addEventListener('click', () => { send({ type: 'paying' }); log('已标记：进入付款'); });
+  $('#btnDone').addEventListener('click', () => { send({ type: 'done' }); log('已标记：完成', 'ok'); });
+  $('#btnFail').addEventListener('click', () => {
+    const e = prompt('失败原因：', '');
+    if (e === null) return;
+    send({ type: 'failed', data: { error: e || '未知错误' } });
+    log('已标记失败: ' + e, 'er');
+  });
+
+  // ---------------- 启动 ----------------
+  refreshBookmarklet('');
+  const q = new URLSearchParams(location.search).get('room');
+  if (q) {
+    $('#joinCode').value = q.toUpperCase();
+    connect(q.toUpperCase());
+    refreshBookmarklet(q.toUpperCase());
+  }
+  log('就绪。左列选地区并查询内购，右列可先装书签。');
+})();
+</script>
+</body>
+</html>
