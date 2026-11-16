@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      5.1.2
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.2：付款页替换成功即扣1次，plan不再扣次）
+// @version      5.1.3
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.3：同一表单只替换+扣次一次，修1.5秒巡检连扣）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -355,7 +355,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v5.1.2</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v5.1.3</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -1809,9 +1809,14 @@
   }
 
   // 从 form 里读出所有字段，重组 body，替换 products 后写回
+  // 同一个表单只处理一次（submit / requestSubmit / 事件 / 巡检 四个入口共用）
+  var _patchedForms = new WeakSet();
+
   function patchBuynowForm(form) {
     try {
       if (!form || !isBuynowAction(form.action)) return 0;
+      if (_patchedForms.has(form)) { log('[form] 该表单已处理过，跳过'); return 0; }
+      _patchedForms.add(form);
 
       // ---- 授权只做提示，不再拦替换（HAR 实证：HAR 里 license/check 在 www 域，
       //      account 域这边读不到 valid，导致替换全被吃掉）----
@@ -2010,7 +2015,11 @@
     try { inferApprovedFromDom(); } catch (e) {}
     try {
       const forms = PAGE.document ? PAGE.document.querySelectorAll('form') : [];
-      for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
+      for (let i = 0; i < forms.length; i++) {
+        var f = forms[i];
+        if (!isBuynowAction(f.action)) continue;
+        patchBuynowForm(f);   // 内部已做唯一性判断（同一表单只处理一次）
+      }
     } catch (e) {}
   }, 1500);
   log('v5.0.2 injected (订单队列 + 会话锁扣次)');
@@ -2100,7 +2109,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v5.1.2', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v5.1.3', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -2122,5 +2131,5 @@
     return _origDel(k);
   };
 
-  log("v5.1.2 injected (licensed build)");
+  log("v5.1.3 injected (licensed build)");
 })();
