@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.8.0
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.8.0：恢复 4.6.2 三层兜底 + 接入网页任务控制台回报）
+// @version      4.7.4
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.7.4：恢复 4.6.2 三层兜底，首项不匹配时整条覆盖）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -185,7 +185,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.8.0</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.7.4</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -492,58 +492,6 @@
   // 本地不再持有任何产品 ID，下面这些函数只为兼容旧调用点保留空实现。
   // ============================================================
   function marketOfAvail(aid) { return ''; }
-
-  // ============================================================
-  // 【任务回报】网页控制台创建 job 后，把 jobId 写进 KEY_JOB。
-  // 浏览器侧每完成一步就回报服务端，控制台用 SSE 实时刷新。
-  // 只回报脱敏状态，不传任何 Microsoft 凭据。
-  // ============================================================
-  const KEY_JOB = 'xfg_jobId';
-
-  // 从 URL 接管 jobId（控制台点「打开付款页」时会带上）
-  (function () {
-    try {
-      var m = location.href.match(/[?&#]xfg_job=(job_[a-f0-9]+)/i);
-      if (m) { setJob(m[1]); log('[job] 已绑定任务 ' + m[1]); }
-    } catch (e) {}
-  })();
-
-  function currentJob() {
-    var v = store.get(KEY_JOB);
-    if (v && typeof v === 'object' && v.id) {
-      if (Date.now() - (v.at || 0) > 6 * 3600 * 1000) return null;
-      return v;
-    }
-    return null;
-  }
-
-  function setJob(id) {
-    if (!id) { store.del(KEY_JOB); return; }
-    store.set(KEY_JOB, { id: String(id), at: Date.now() });
-  }
-
-  /** 回报一个任务状态；失败只记日志，不打断主流程 */
-  function reportJob(step, extra) {
-    var j = currentJob();
-    if (!j) return;
-    var lc = getLicense();
-    var body = Object.assign({}, extra || {});
-    if (step === 'plan') {
-      body.code = lc ? lc.code : '';
-    }
-    fetch(SERVER_BASE + '/api/jobs/' + encodeURIComponent(j.id) + '/' + step, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      credentials: 'omit',
-      body: JSON.stringify(body)
-    })
-      .then(function (r) { return r.json().catch(function () { return null; }); })
-      .then(function (o) {
-        if (!o || !o.ok) { log('[job] ' + step + ' 回报失败: ' + ((o && o.error) || '?')); return; }
-        log('[job] ' + step + ' → ' + (o.data && o.data.state));
-      })
-      .catch(function (e) { log('[job] ' + step + ' 回报异常: ' + e.message); });
-  }
 
   // ============================================================
   // 【4.7.0 核心】改写指令（plan）—— 业务规则全在服务端
@@ -980,8 +928,6 @@
       var appid = readFirstProductId(bodyStr);
       markApproved();
       if (apid) pushOrder(apid, appid, readFirstSkuId(bodyStr), readMarket(bodyStr));
-      // 回报给网页控制台：主号已批准
-      try { reportJob('parent-approved', { orderId: apid || '' }); } catch (e) {}
       log('[approve] 已批准 orderId=' + (apid || '?') + ' productId=' + (appid || '?') + ' → approvedTime 已写入');
       notify('✅ 已批准', '进入最终付款阶段', 'orders / buynow 将一致换成内购');
       return null;
@@ -1015,10 +961,6 @@
     //   否则（子号发起的普通购买）保持原样，避免变成充值型购买
     // ============================================================
     if (/purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders/.test(url)) {
-      try {
-        var jid = readOrderId(bodyStr);
-        if (jid) { reportJob('request-created', { orderId: jid }); reportJob('waiting-parent', { orderId: jid }); }
-      } catch (e) {}
       // ============================================================
       // 对照手机端稳定版 swap_payment.js 的 orders 分支：
       //   「主号已批准（approved=1）就换订单商品」，并不是一律不换。
@@ -1472,7 +1414,6 @@
       }
       log('✅ buynow 表单已改写 market=' + (mk || '?'), arr);
       notify('✅ 付款页已换内购', tt.productId + ' · sku ' + tt.skuId, 'market ' + (mk || '?'));
-      try { reportJob('plan'); } catch (e) {}
       return r.n;
     } catch (e) { log('patchBuynowForm err', e); return 0; }
   }
@@ -1577,7 +1518,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.8.0 injected (4.6.2 三层兜底 + 任务回报)');
+  log('v4.7.4 injected (服务端 plan + 4.6.2 三层兜底：精细/强制/整条覆盖)');
 
   // ============================================================
   // 菜单
@@ -1668,7 +1609,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.8.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.7.4', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1690,5 +1631,5 @@
     return _origDel(k);
   };
 
-  log("v4.8.0 injected (licensed build)");
+  log("v4.7.4 injected (licensed build)");
 })();
