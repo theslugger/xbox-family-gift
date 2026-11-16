@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.5.5
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.5.5：修 FailedToHydrate-ProductNotFound，updateURL 改 raw 防 CDN 旧缓存）
+// @version      4.5.6
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.5.6：商品类别校验，修①②放反导致的 FailedToHydrate）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -184,7 +184,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.5.5</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.5.6</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -453,6 +453,7 @@
     // 记录商品类型线索：从页面/接口能判断的就记下来，供购物车快照分流用
     for (const ids of items) {
       try { recordKindHint(ids); } catch (e) {}
+      try { classifyProduct(ids.productId); } catch (e) {}
     }
 
     for (const ids of items) {
@@ -635,6 +636,57 @@
     })(o);
     return n > 0 ? { body: JSON.stringify(o), n } : null;
   }
+  // ============================================================
+  // 商品类别识别（HAR+DisplayCatalog 实证）：
+  //   9P6LX2D15SD7 → ProductType=Consumable（Apex Legends 500 Coins）= 内购
+  //   9PKVLFR97PKL → ProductType=Game（Neon Apex: Beyond the Limit）= 游戏
+  //   buynow 把 Consumable 当成 parentApproval 的商品提交 → FailedToHydrate-ProductNotFound
+  // 所以面板 ①② 放反时必须拦住，不能让它进付款页。
+  // ============================================================
+  var KIND_CACHE = {};          // productId -> 'game' | 'consumable' | 'durable' | ''
+  function classifyProduct(pid) {
+    if (!pid) return;
+    pid = String(pid).toUpperCase();
+    if (KIND_CACHE[pid] !== undefined) return;
+    KIND_CACHE[pid] = '';
+    try {
+      fetch('https://displaycatalog.mp.microsoft.com/v7.0/products/' +
+            encodeURIComponent(pid) + '?market=US&languages=en-us&fieldsTemplate=Details',
+            { credentials: 'omit' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (o) {
+          var p = o && o.Product;
+          var t = (p && p.ProductType) ? String(p.ProductType).toLowerCase() : '';
+          KIND_CACHE[pid] = t;
+          var title = '';
+          try { title = p.LocalizedProperties[0].ProductTitle || ''; } catch (e) {}
+          log('[kind] ' + pid + ' → ' + (t || '未知') + (title ? ' · ' + title : ''));
+          store.set('xfg_type_' + pid, { type: t, title: title });
+          refreshPanel();
+        })
+        .catch(function () { KIND_CACHE[pid] = ''; });
+    } catch (e) {}
+  }
+  function kindOf(ids) {
+    if (!ids || !ids.productId) return '';
+    var pid = String(ids.productId).toUpperCase();
+    if (KIND_CACHE[pid] !== undefined) return KIND_CACHE[pid];
+    var rec = store.get('xfg_type_' + pid);
+    if (rec && rec.type) { KIND_CACHE[pid] = rec.type; return rec.type; }
+    classifyProduct(pid);
+    return '';
+  }
+  // ①② 放反检测：①必须是 Game，②必须是 Consumable/Durable
+  function checkKindOrder(g, t) {
+    var kg = kindOf(g), kt = kindOf(t);
+    if (!kg || !kt) return { ok: true, pending: true };
+    if (kg === 'game' && (kt === 'consumable' || kt === 'durable' || kt === 'addon')) return { ok: true };
+    if (kt === 'game' && (kg === 'consumable' || kg === 'durable' || kg === 'addon')) {
+      return { ok: false, swapped: true, kg: kg, kt: kt };
+    }
+    if (kg === 'consumable' || kg === 'durable') return { ok: false, swapped: true, kg: kg, kt: kt };
+    return { ok: true };
+  }
   function unq(s) { try { return decodeURIComponent(s); } catch (e) { return s; } }
   function qq(s) { return encodeURIComponent(s); }
   function swapBuynowForm(bodyStr, g, t) {
@@ -653,6 +705,15 @@
     const formMarket = tgt || normMarket(unq(d['market'] || ''));
     let tt = t;
     if (formMarket && t && t.productId) tt = alignAvail(t, formMarket);
+    // ①② 放反 → 拒绝替换（Consumable 当 parentApproval 商品会 ProductNotFound）
+    var ko = checkKindOrder(g, t);
+    if (!ko.ok && ko.swapped) {
+      notify('⚠️ ①② 放反了，已跳过替换',
+        '①是 ' + ko.kg + '，②是 ' + ko.kt,
+        '点面板「交换①②」把游戏放①、内购放②，再重新发起');
+      log('[buynow] kind 放反: ①=' + ko.kg + ' ②=' + ko.kt + ' → 跳过');
+      return null;
+    }
     // HAR 教训：内购 availabilityId B0N520SW1VC1 不属于 AR（也查不到归属），
     // 换上去 buynow 直接 FailedToHydrate-ProductNotFound。宁可不动，也别换脏 ID。
     if (formMarket) {
@@ -1229,7 +1290,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.5.5 injected (orders 永不替换 + buynow 单点替换；updateURL=raw)');
+  log('v4.5.6 injected (orders 永不替换 + buynow 单点替换 + 商品类别校验)');
 
   // ============================================================
   // 菜单
@@ -1308,7 +1369,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.5.5', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.5.6', 'color:#107C10;font-weight:700',
       '| orders 分支已禁替换 | 唯一替换点=buynow 表单');
   } catch (e) {}
 
