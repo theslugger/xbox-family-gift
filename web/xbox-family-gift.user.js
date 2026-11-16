@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.5.3
+// @version      4.5.4
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.5.3：付款页补提交闸门，修付款报错）
 // @author       theslugger
 // @updateURL    https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@main/web/xbox-family-gift.user.js
@@ -653,6 +653,18 @@
     const formMarket = tgt || normMarket(unq(d['market'] || ''));
     let tt = t;
     if (formMarket && t && t.productId) tt = alignAvail(t, formMarket);
+    // HAR 教训：内购 availabilityId B0N520SW1VC1 不属于 AR（也查不到归属），
+    // 换上去 buynow 直接 FailedToHydrate-ProductNotFound。宁可不动，也别换脏 ID。
+    if (formMarket) {
+      var iapMk = marketOfAvail(tt.availabilityId) || normMarket(tt.market || '');
+      if (iapMk && normMarket(formMarket) && iapMk !== normMarket(formMarket)) {
+        notify('⚠️ 内购 ID 与付款市场不符，已跳过替换',
+          '内购 ' + iapMk + ' / 付款 ' + formMarket,
+          '去 /' + (MARKET_LOCALE[iapMk] || iapMk.toLowerCase()) + '/ 重新加购内购');
+        log('[buynow] availabilityId ' + tt.availabilityId + ' 市场=' + iapMk + ' 与 form market=' + formMarket + ' 不符，跳过');
+        return null;
+      }
+    }
     let cn = 0; arr.forEach(it => { cn += swapOne(it, g, tt); });
     if (!cn) return null;
     const parts = bodyStr.split('&').map(p => {
@@ -849,40 +861,50 @@
     //   否则（子号发起的普通购买）保持原样，避免变成充值型购买
     // ============================================================
     if (/purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders/.test(url)) {
-      // 订单里就是游戏本身 = 子号发起申请 / 批准时建单，此时绝不能换成内购
-      // 否则建出来的是「内购订单」，付款页校验必然失败（这就是 4.5.x 付款报错的直接原因）
-      // 替换点只有一个：主号在付款页点付款那一刻
-      var hasGame = false, hasIap = false;
-      try {
-        (JSON.parse(bodyStr).items || []).forEach(function (it) {
-          if (!it || !it.productId) return;
-          if (g && it.productId === g.productId) hasGame = true;
-          if (t && it.productId === t.productId) hasIap = true;
-        });
-      } catch (e) { log('orders：body 解析失败，按原文判断'); }
-      log('[orders] 游戏项=' + hasGame + ' 内购项=' + hasIap);
-      if (hasGame && !hasIap) {
-        log('orders：订单商品就是游戏 → 发起申请阶段，不替换（等付款页）');
-        return null;
-      }
-      var isFamilyOrder = /AMCFamilySafety/i.test(bodyStr) || /parentApproval/i.test(bodyStr);
-      if (!isFamilyOrder) {
-        log('orders：非家庭组批准场景，保持原样（等主号付款页再换）');
-        return null;
-      }
-      const r = swapOrdersJson(bodyStr, g, t);
-      if (r) {
-        notify('✅ 订单已换内购', t.productId, '字段:' + r.n);
-        chargeOnce(t, g);
-        return r.body;
-      }
+      // ============================================================
+      // HAR 实证（2026-11-16T03:50:03.599Z，POST /v7.0/users/me/orders → 201）：
+      //   body = {"market":"AR","language":"es-AR","items":[
+      //     {"productId":"9PKVLFR97PKL","availabilityId":"B0N520SW1VC1","skuId":"0010",
+      //      "beneficiary":{"identityType":"Msa","identityValue":"<子号 puid>"}}]}
+      //   订单被换成【内购】→ approve 也跟着内购 →
+      //   buynow 收到 products=[游戏 9P6LX2D15SD7 / AR availabilityId B2XRTR8KPHPM]
+      //   与订单商品不一致 → 目录解析失败 → FailedToHydrate-ProductNotFound（付款页报错）。
+      //
+      // 结论：orders 阶段【永远不换】。这里是子号发起申请 / 主号批准建单，
+      // 一旦换掉就破坏 buynow 的商品一致性。唯一改写点 = buynow 表单。
+      // ============================================================
+      log('[orders] 建单/批准阶段：一律保持原样，不替换');
       return null;
     }
     if (/www\.microsoft\.com\/store\/purchase\/buynowui\/buynow/.test(url)) {
-      // buynow 必须是家庭组批准链路
+      // ---- 诊断：HAR 里这条链路的真实参数 ----
+      try {
+        var dd = {};
+        bodyStr.split('&').forEach(function (p) {
+          var i = p.indexOf('=');
+          if (i < 0) return;
+          dd[decodeURIComponent(p.slice(0, i))] = decodeURIComponent(p.slice(i + 1));
+        });
+        var p0 = [];
+        try { p0 = JSON.parse(dd['products'] || '[]'); } catch (e) {}
+        log('[buynow] scenario=' + (dd['scenario'] || '-') +
+            ' cssOverride=' + (dd['cssOverride'] || '-') +
+            ' caller=' + (dd['callerApplicationId'] || '-') +
+            ' parentHost=' + (dd['parentHostName'] || '-') +
+            ' poid=' + (dd['purchaseOrderId'] || '-') +
+            ' market=' + (dd['market'] || '-') +
+            ' 首项=' + ((p0[0] && p0[0].productId) || '?') + '/' + ((p0[0] && p0[0].availabilityId) || '?'));
+      } catch (e) {}
+
+      // 必须是家庭组批准链路
       var isFam = /AMCFamilySafety/i.test(bodyStr) || /parentApproval/i.test(bodyStr);
       if (!isFam) {
         log('buynow：非家庭组链路，不替换');
+        return null;
+      }
+      // 必须有 purchaseOrderId = 主号批准后的付款页（HAR 实测：39bfe4f4-…）
+      if (!/purchaseOrderId=[^&]+/i.test(bodyStr)) {
+        log('buynow：无 purchaseOrderId → 发起申请阶段，不替换');
         return null;
       }
       const r = swapBuynowForm(bodyStr, g, t);
@@ -1207,7 +1229,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.5.3 injected (v4.1 core + gated payment-phase patch)');
+  log('v4.5.4 injected (orders 永不替换 + buynow 单点替换，修 FailedToHydrate-ProductNotFound)');
 
   // ============================================================
   // 菜单
