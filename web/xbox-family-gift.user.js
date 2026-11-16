@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.8.0
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.8.0：4.6.2 替换本体 + 服务端 plan 下发，本地零 ID 表）
+// @version      4.9.0
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.0：手动获取①游戏/②内购ID（读页面URL）+ 4.6.2 替换本体）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -185,16 +185,23 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.8.0</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.9.0</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
         '<div id="xfg-log" style="max-height:150px;overflow:auto;background:#000;border-radius:6px;padding:6px;' +
           'font:11px/1.4 ui-monospace,Menlo,monospace;color:#9c9;white-space:pre-wrap"></div>' +
-        '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">' +
+        '<div style="margin-top:8px;display:flex;gap:6px">' +
+          '<button id="xfg-grab1" style="flex:1;padding:6px;background:#0d2a0d;color:#7fd;border:1px solid #2a5;border-radius:6px;cursor:pointer">获取①游戏ID</button>' +
+          '<button id="xfg-del1" style="flex:0 0 54px;padding:6px;background:#2a0d0d;color:#f99;border:1px solid #633;border-radius:6px;cursor:pointer">删除</button>' +
+        '</div>' +
+        '<div style="margin-top:6px;display:flex;gap:6px">' +
+          '<button id="xfg-grab2" style="flex:1;padding:6px;background:#0d2a0d;color:#7fd;border:1px solid #2a5;border-radius:6px;cursor:pointer">获取②内购ID</button>' +
+          '<button id="xfg-del2" style="flex:0 0 54px;padding:6px;background:#2a0d0d;color:#f99;border:1px solid #633;border-radius:6px;cursor:pointer">删除</button>' +
+        '</div>' +
+        '<div style="margin-top:6px;display:flex;gap:6px">' +
           '<button id="xfg-lic" style="flex:1;padding:5px;background:#2a1a3a;color:#c8f;border:1px solid #536;border-radius:6px;cursor:pointer">授权</button>' +
-          '<button id="xfg-swap" style="flex:1;padding:5px;background:#2a1a3a;color:#c9f;border:1px solid #536;border-radius:6px;cursor:pointer">交换①②</button>' +
-          '<button id="xfg-clear" style="flex:1;padding:5px;background:#3a1a1a;color:#f99;border:1px solid #633;border-radius:6px;cursor:pointer">清空</button>' +
+          '<button id="xfg-clear" style="flex:1;padding:5px;background:#3a1a1a;color:#f99;border:1px solid #633;border-radius:6px;cursor:pointer">全部清空</button>' +
         '</div>' +
       '</div>';
     document.documentElement.appendChild(panelEl);
@@ -213,15 +220,10 @@
       clearApproved(); store.del(KEY_ORDER_QUEUE); store.del(KEY_PLAN);
       logLines = []; refreshPanel(); panelAdd('已清空 idsGame/idsIAP/approved/orderQueue/plan');
     });
-    panelEl.querySelector('#xfg-swap').addEventListener('click', function () {
-      var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
-      if (!g || !t) { panelAdd('①② 需要都有值才能交换'); return; }
-      store.set(KEY_GAME, t); store.set(KEY_IAP, g);
-      store.del(KEY_PLAN);
-      panelAdd('已交换 ①游戏 ↔ ②内购');
-      refreshPanel();
-      try { fetchPlan(); } catch (e) {}
-    });
+    panelEl.querySelector('#xfg-grab1').addEventListener('click', function () { grabTo('game'); });
+    panelEl.querySelector('#xfg-grab2').addEventListener('click', function () { grabTo('iap'); });
+    panelEl.querySelector('#xfg-del1').addEventListener('click', function () { clearSlot('game'); });
+    panelEl.querySelector('#xfg-del2').addEventListener('click', function () { clearSlot('iap'); });
     panelEl.querySelector('#xfg-lic').addEventListener('click', async function () {
       var cur = getLicense();
       var raw = prompt(
@@ -255,6 +257,71 @@
 
     refreshPanel();
     panelAdd('脚本已注入页面世界(@grant none)');
+  }
+
+  // ============================================================
+  // 【手动抓取】直接读当前页面 URL 里的 productId
+  //   https://www.xbox.com/es-ar/games/store/xxx/9P6LX2D15SD7
+  //   https://www.microsoft.com/es-ar/p/xxx/9PKVLFR97PKL
+  //   https://www.xbox.com/es-ar/p/9P6LX2D15SD7
+  // 用户点「获取①/获取②」时，把当前页的 ID 记到对应槽位。
+  // ============================================================
+  function pidFromUrl() {
+    var u = location.href;
+    var m = u.match(/\/store\/(?:apps|pdp|games)\/[^/]*\/([A-Z0-9]{12})\b/i);
+    if (m) return m[1].toUpperCase();
+    m = u.match(/\/p\/([A-Z0-9]{12})\b/i);
+    if (m) return m[1].toUpperCase();
+    m = u.match(/\/store\/apps\/([A-Z0-9]{12})\b/i);
+    if (m) return m[1].toUpperCase();
+    // 兜底：URL 里任意 12 位大写字母数字段
+    m = u.match(/\b([A-Z0-9]{12})\b/);
+    if (m && /[0-9]/.test(m[1]) && /[A-Z]/.test(m[1])) return m[1];
+    return '';
+  }
+
+  /** 抓当前页 ID 并写入指定槽位（'game' | 'iap'） */
+  function grabTo(slot) {
+    var pid = pidFromUrl();
+    if (!pid) {
+      panelAdd('❌ 当前页面 URL 里没有商品 ID，请先打开商店页面');
+      notify('获取失败', '当前 URL 无 productId', location.pathname);
+      return false;
+    }
+    var key = slot === 'game' ? KEY_GAME : KEY_IAP;
+    var old = store.get(key);
+    if (old && old.productId === pid) {
+      panelAdd('ℹ️ ' + (slot === 'game' ? '①' : '②') + ' 已经是 ' + pid);
+      return true;
+    }
+    store.set(key, {
+      productId: pid,
+      availabilityId: (old && old.availabilityId) || '',
+      skuId: (old && old.skuId) || '0010',
+      market: targetMarket() || '',
+      locale: ''
+    });
+    panelAdd('✅ 已获取' + (slot === 'game' ? '① 游戏' : '② 内购') + ': ' + pid);
+    notify('✅ 已获取' + (slot === 'game' ? '① 游戏' : '② 内购'), pid, '来自当前页面 URL');
+    // 两个都有就锁定并拉 plan
+    var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+    if (g && g.productId && t && t.productId) {
+      store.set(KEY_LOCK, true);
+      panelAdd('🔒 ①② 齐备，向服务端请求替换目标');
+      try { fetchPlan(); } catch (e) {}
+    }
+    refreshPanel();
+    return true;
+  }
+
+  /** 清掉某个槽位（可重来） */
+  function clearSlot(slot) {
+    store.del(slot === 'game' ? KEY_GAME : KEY_IAP);
+    store.del(KEY_LOCK);
+    store.del(KEY_PLAN);
+    planState = null;
+    panelAdd('已删除' + (slot === 'game' ? '① 游戏' : '② 内购') + '，可重新获取');
+    refreshPanel();
   }
 
   function refreshPanel() {
@@ -1443,7 +1510,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.8.0 injected (4.6.2 替换本体 + 服务端 plan，本地零 ID 表)');
+  log('v4.9.0 injected (手动抓ID + 4.6.2 替换本体)');
 
   // ============================================================
   // 菜单
@@ -1534,7 +1601,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.8.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.9.0', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1556,5 +1623,5 @@
     return _origDel(k);
   };
 
-  log("v4.8.0 injected (licensed build)");
+  log("v4.9.0 injected (licensed build)");
 })();
