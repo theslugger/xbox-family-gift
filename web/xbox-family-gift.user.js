@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.4.0
+// @version      4.5.0
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活
 // @author       theslugger
 // @updateURL    https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@main/web/xbox-family-gift.user.js
@@ -924,10 +924,15 @@
       } catch (e) {
         log('[buynow] 参数解析失败');
       }
-      // buynow 必须是家庭组批准链路
+      // buynow：必须是「account.microsoft.com 发起的家庭组批准」链路
+      // 从 xbox.com 发起的普通购买（callerApplicationId=XboxCom, parentHostName=www.xbox.com）
+      // 一律不碰
+      var hostM = bodyStr.match(/parentHostName=([^&]+)/i);
+      var parentHost = hostM ? decodeURIComponent(hostM[1]).toLowerCase() : '';
+      var isAcctHost = /account\.microsoft\.com$/i.test(parentHost);
       var isFam = /AMCFamilySafety/i.test(bodyStr) || /parentApproval/i.test(bodyStr);
-      if (!isFam) {
-        log('buynow：非家庭组链路，不替换');
+      if (!isAcctHost || !isFam) {
+        log('buynow：host=' + (parentHost || '空') + ' 非 account.microsoft.com 或非家庭组链路 → 不替换');
         return null;
       }
       const r = swapBuynowForm(bodyStr, g, t);
@@ -1157,29 +1162,51 @@
         if (el && el.name) F[el.name] = String(el.value || '');
       }
 
-      // ---- 时机闸门：无 purchaseOrderId = 子号发起申请，绝不替换 ----
-      const poid = (F['purchaseOrderId'] || '').trim();
-      const scen = F['scenario'] || '';
+      // ============================================================
+      // 严格白名单：只有「主张号在 family 页面批准」这一条链路才替换
+      //
+      // HAR 证据（www.xbox.com 上的普通购买，绝不能碰）：
+      //   origin: https://www.xbox.com
+      //   callerApplicationId=XboxCom
+      //   parentHostName=www.xbox.com
+      //   cssOverride=XboxCom2NewUI
+      //   无 scenario / purchaseOrderId 字段
+      //
+      // 家庭组批准链路的特征（三者至少命中一个且来自 account.microsoft.com）：
+      //   parentHostName=account.microsoft.com
+      //   cssOverride=AMCFamilySafety
+      //   callerApplicationId=AMCFamilySafetyWeb/App
+      // ============================================================
       const caller = F['callerApplicationId'] || '';
-      const isFamily = /^AMCFamilySafety/i.test(caller) || scen === 'parentApproval';
+      const scen = F['scenario'] || '';
+      const parentHost = (F['parentHostName'] || '').toLowerCase();
+      const cssOv = F['cssOverride'] || '';
+      const poid = (F['purchaseOrderId'] || '').trim();
 
-      // 诊断：只打印一次，避免 1.5s 轮询刷屏
-      const sig = poid + '|' + scen + '|' + caller;
-      if (patchBuynowForm._lastSig !== sig) {
-        patchBuynowForm._lastSig = sig;
-        log('[form] scenario=' + (scen || '-') +
-            ' caller=' + (caller || '-') +
-            ' purchaseOrderId=' + (poid || '空') +
-            ' isFamily=' + isFamily);
+      const familyCaller = /^AMCFamilySafety/i.test(caller);
+      const familyCss = /AMCFamilySafety/i.test(cssOv);
+      const familyHost = /account\.microsoft\.com$/i.test(parentHost);
+      const familyScen = scen === 'parentApproval';
+
+      // 必须来自 account.microsoft.com，且是家庭组链路
+      if (!familyHost) {
+        log('[form] parentHostName=' + (parentHost || '空') + ' 不是 account.microsoft.com → 不替换');
+        return 0;
       }
-
-      if (!isFamily) { log('form：非家庭组链路，不替换'); return 0; }
+      if (!(familyCaller || familyCss || familyScen)) {
+        log('[form] 无家庭组标识 caller=' + (caller || '空') +
+            ' cssOverride=' + (cssOv || '空') + ' scenario=' + (scen || '空') + ' → 不替换');
+        return 0;
+      }
       if (!poid) {
+        log('[form] 家庭组链路但无 purchaseOrderId → 发起申请阶段，不替换');
         warnOnce('form-no-poid', '这是「发起申请」阶段，不替换',
           '等主号批准后到付款页才会换成内购');
         return 0;
       }
+      log('[form] ✅ 家庭组付款阶段 host=' + parentHost + ' poid=' + poid);
 
+      // 诊断：只打印一次，避免 1.5s 轮询刷屏
       const g = store.get(KEY_GAME), t = store.get(KEY_IAP);
       if (!g || !t || !t.productId || !t.availabilityId) return 0;
 
