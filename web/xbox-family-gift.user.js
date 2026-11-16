@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.2.0
+// @version      4.3.0
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活
 // @author       theslugger
 // @updateURL    https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@main/web/xbox-family-gift.user.js
@@ -645,6 +645,20 @@
     // 实测值可能是 AMCFamilySafetyApp / AMCFamilySafetyWeb，统一按前缀匹配
     const isFamilySafety = /^AMCFamilySafety/i.test(caller) || scen === 'parentApproval';
     if (!isFamilySafety) return null;
+
+    // ============================================================
+    // 时机：子号「Pide permiso primero / Preguntar ahora」也会走 buynow，
+    //   那时订单还没建立，purchaseOrderId 为空 —— 这一步不能换，
+    //   否则发起的就是内购申请，家庭组看到的是金币而不是游戏。
+    //   只有主号批准后付款（带 purchaseOrderId）才替换。
+    // ============================================================
+    const poid = d['purchaseOrderId'] ? unq(d['purchaseOrderId']).trim() : '';
+    if (!poid) {
+      log('buynow：无 purchaseOrderId，属于「发起家庭组申请」阶段 → 不替换');
+      return null;
+    }
+    log('buynow：有 purchaseOrderId=' + poid + ' → 主号付款阶段，允许替换');
+
     if (d['products'] === undefined) return null;
     let arr; try { arr = JSON.parse(unq(d['products'])); } catch (e) { return null; }
     if (!Array.isArray(arr)) return null;
@@ -891,6 +905,25 @@
       return null;
     }
     if (/www\.microsoft\.com\/store\/purchase\/buynowui\/buynow/.test(url)) {
+      // ---- 诊断：把 buynow 的关键参数全打出来 ----
+      try {
+        var dd = {};
+        bodyStr.split('&').forEach(function (p) {
+          var i = p.indexOf('=');
+          if (i < 0) return;
+          dd[decodeURIComponent(p.slice(0, i))] = decodeURIComponent(p.slice(i + 1));
+        });
+        var prodArr = [];
+        try { prodArr = JSON.parse(dd['products'] || '[]'); } catch (e) {}
+        log('[buynow] scenario=' + (dd['scenario'] || '-') +
+            ' caller=' + (dd['callerApplicationId'] || '-') +
+            ' purchaseOrderId=' + (dd['purchaseOrderId'] || '-') +
+            ' layout=' + (dd['layout'] || '-') +
+            ' parentHostName=' + (dd['parentHostName'] || '-') +
+            ' 首项=' + ((prodArr[0] && prodArr[0].productId) || '?'));
+      } catch (e) {
+        log('[buynow] 参数解析失败');
+      }
       // buynow 必须是家庭组批准链路
       var isFam = /AMCFamilySafety/i.test(bodyStr) || /parentApproval/i.test(bodyStr);
       if (!isFam) {
