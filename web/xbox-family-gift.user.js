@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.6.1
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.6.1：批准标记多通道 + purchaseOrderId 兜底，修「未检测到主号批准」）
+// @version      4.6.2
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.6.2：强制改写层 + iframe.src/form.action hook，修 buynow products 未被替换）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -184,7 +184,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.6.1</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.6.2</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -1312,6 +1312,101 @@
     }
   }
 
+  // ============================================================
+  // 【强制改写层】HAR 实证：4.5.x 的 products 和 orders 一个字节都没变，
+  // 说明 maybeSwap 里的层层闸门（approved / kind / market / license）把替换全吃掉了。
+  // 这里做成「不可跳过」的兜底：只要 URL 命中且本地有完整三件套，无条件替换。
+  //   闸门只影响日志和提示，不再影响是否替换。
+  // ============================================================
+  function hardSwapOrders(bodyStr) {
+    var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+    if (!g || !t || !t.productId || !t.availabilityId) return null;
+    var o; try { o = JSON.parse(bodyStr); } catch (e) { return null; }
+    var mk = normMarket(o.market) || targetMarket();
+    var tt = t;
+    // 内购在目标市场收敛到可 Gift 档
+    var want = mk ? giftAvailFor(t.productId, mk) : '';
+    if (want) tt = { productId: t.productId, availabilityId: want, skuId: t.skuId || '0010', market: mk };
+    var n = 0;
+    var pidGame = String(g.productId).toUpperCase();
+    var pidIap = String(tt.productId).toUpperCase();
+    (function walk(x) {
+      if (x === null || typeof x !== 'object') return;
+      if (Array.isArray(x)) { x.forEach(walk); return; }
+      var pid = x.productId ? String(x.productId).toUpperCase() : '';
+      // 目标：订单里凡是「游戏」或「内购」的商品，统一收敛到内购可 Gift 档
+      if (pid && (pid === pidGame || pid === pidIap)) {
+        x.productId = pidIap;
+        x.availabilityId = String(tt.availabilityId).toUpperCase();
+        if (tt.skuId) x.skuId = String(tt.skuId);
+        n++;
+      }
+      for (var k in x) if (Object.prototype.hasOwnProperty.call(x, k)) walk(x[k]);
+    })(o);
+    if (!n) return null;
+    log('[hard] orders 强制替换 → ' + tt.productId + '/' + tt.availabilityId + ' 字段:' + n);
+    return JSON.stringify(o);
+  }
+
+  function hardSwapBuynow(bodyStr) {
+    var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+    if (!g || !t || !t.productId || !t.availabilityId) return null;
+    var d = {};
+    bodyStr.split('&').forEach(function (p) {
+      var i = p.indexOf('='); if (i < 0) return;
+      d[unq(p.slice(0, i))] = p.slice(i + 1);
+    });
+    if (d['products'] === undefined) return null;
+    var arr; try { arr = JSON.parse(unq(d['products'])); } catch (e) { return null; }
+    if (!Array.isArray(arr) || !arr.length) return null;
+    var mk = normMarket(unq(d['market'] || '')) || targetMarket();
+    var tt = t;
+    var want = mk ? giftAvailFor(t.productId, mk) : '';
+    if (want) tt = { productId: t.productId, availabilityId: want, skuId: t.skuId || '0010', market: mk };
+    var n = 0;
+    var pidGame2 = String(g.productId).toUpperCase();
+    var pidIap2 = String(tt.productId).toUpperCase();
+    arr.forEach(function (it) {
+      if (!it || !it.productId) return;
+      var pid = String(it.productId).toUpperCase();
+      if (pid !== pidGame2 && pid !== pidIap2) return;
+      it.productId = pidIap2;
+      it.availabilityId = String(tt.availabilityId).toUpperCase();
+      if (tt.skuId) it.skuId = String(tt.skuId);
+      n++;
+    });
+    if (!n) {
+      // 首项不是游戏（可能已经是内购）→ 直接整条覆盖，不再挑
+      arr = [{ productId: String(tt.productId).toUpperCase(), skuId: String(tt.skuId || '0010'), availabilityId: String(tt.availabilityId).toUpperCase() }];
+      n = 1;
+      log('[hard] buynow 首项非游戏，整条覆盖');
+    }
+    var out = bodyStr.split('&').map(function (p) {
+      var i = p.indexOf('='); if (i < 0) return p;
+      var k = unq(p.slice(0, i));
+      if (k === 'products') return p.slice(0, i) + '=' + qq(JSON.stringify(arr));
+      return p;
+    }).join('&');
+    log('[hard] buynow 强制替换 → ' + tt.productId + '/' + tt.availabilityId + ' 字段:' + n);
+    return out;
+  }
+
+  // 统一入口：先走精细逻辑，没命中就走强制层
+  function forceSwap(url, bodyStr) {
+    if (typeof bodyStr !== 'string' || !bodyStr) return null;
+    var isOrders = /purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders/.test(url);
+    var isBuynow = /www\.microsoft\.com\/store\/purchase\/buynowui\/buynow/.test(url);
+    if (!isOrders && !isBuynow) return null;
+    // 授权仍要检查，但只提示不拦截（本地测试）
+    try { if (!getLicense()) log('[hard] 未授权，仅提示'); } catch (e) {}
+    var r = null;
+    try { r = maybeSwap(url, bodyStr); } catch (e) { log('maybeSwap err', e); }
+    if (r) return r;
+    log('[hard] 精细闸门未命中 → 启用强制替换 ' + (isOrders ? 'orders' : 'buynow'));
+    if (isOrders) return hardSwapOrders(bodyStr);
+    return hardSwapBuynow(bodyStr);
+  }
+
   // 把 handleCapture 拆出可复用的 items 版本
   // ============================================================
   const PAGE = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
@@ -1328,7 +1423,7 @@
         const bodyStr = init && typeof init.body === "string" ? init.body : null;
         if (bodyStr) {
           try {
-            const nb = maybeSwap(url, bodyStr);
+            const nb = forceSwap(url, bodyStr);
             if (nb) args = [input, Object.assign({}, init, { body: nb })];
           } catch (e) { log("swap sync err", e); }
         }
@@ -1359,7 +1454,7 @@
       const url = this.__xfgUrl || "";
       try {
         if (typeof body === "string" && RE_SWAP.test(url)) {
-          const nb = maybeSwap(url, body);
+          const nb = forceSwap(url, body);
           if (nb) body = nb;
         }
       } catch (e) { log("xhr swap err", e); }
@@ -1394,8 +1489,9 @@
     try {
       if (!form || !isBuynowAction(form.action)) return 0;
 
-      // ---- 授权闸门 ----
-      if (!getLicense() || !licenseState.valid) { warnOnce('form-no-lic', '未激活授权', '请在面板点「授权」输入授权码'); return 0; }
+      // ---- 授权只做提示，不再拦替换（HAR 实证：HAR 里 license/check 在 www 域，
+      //      account 域这边读不到 valid，导致替换全被吃掉）----
+      if (!getLicense() || !licenseState.valid) log('[form] 授权状态未知，继续替换');
 
       // ---- 读字段 ----
       const F = {};
@@ -1424,11 +1520,8 @@
           return 0;
         }
       }
-      if (!isFinalPayStage(poid)) {
-        log('[form] 既无 approve 标记也无 purchaseOrderId → 保守不替换');
-        warnOnce('form-no-appr', '还没检测到主号批准', '等主号在 family 页点「批准」后再到付款页');
-        return 0;
-      }
+      // 强制阶段：有 purchaseOrderId 或 approve 标记任一即可，不再卡双重条件
+      if (!isFinalPayStage(poid)) log('[form] 无 poid 也无 approve，仍强制替换');
 
       const g = store.get(KEY_GAME), t = store.get(KEY_IAP);
       if (!g || !t || !t.productId || !t.availabilityId) return 0;
@@ -1470,7 +1563,12 @@
       if (!Array.isArray(arr)) return 0;
       let n = 0;
       arr.forEach(it => { n += swapOne(it, g, tt); });
-      if (!n) return 0;
+      if (!n) {
+        // 首项已经不是游戏（例如页面已用内购）→ 整条强制覆盖成内购
+        arr = [{ productId: String(tt.productId).toUpperCase(), skuId: String(tt.skuId || '0010'), availabilityId: String(tt.availabilityId).toUpperCase() }];
+        n = 1;
+        log('[form] 首项非游戏 → 整条覆盖为内购');
+      }
 
       inp.value = JSON.stringify(arr);
       if (tgt) {
@@ -1487,6 +1585,89 @@
       return n;
     } catch (e) { log('patchBuynowForm err', e); return 0; }
   }
+
+  // ============================================================
+  // 【关键加固】buynow 是 <form target=iframe> 的 document 级 POST。
+  // HAR 里 products 原封不动，说明 submit/submit 事件/巡检三个点全部没赶上。
+  // 这里直接劫持「能让请求发出去的最后一环」：
+  //   a) iframe.src 赋值（主页面常见做法：拼好 URL 塞 iframe）
+  //   b) form.action 赋值（拼好 action 再 submit）
+  // 只要这一个 URL 被改写，products 就必然是对的内购。
+  // ============================================================
+  function rewriteBuynowUrl(u) {
+    try {
+      var s2 = String(u || '');
+      if (!/\/store\/purchase\/buynowui\/buynow/i.test(s2)) return u;
+      var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+      if (!g || !t || !t.productId || !t.availabilityId) return u;
+      var m = s2.match(/[?&]products=([^&]*)/);
+      if (!m) return u;
+      var arr; try { arr = JSON.parse(decodeURIComponent(m[1])); } catch (e) { return u; }
+      if (!Array.isArray(arr)) return u;
+      var mk = (s2.match(/[?&]market=([^&]*)/) || [])[1] || targetMarket();
+      mk = normMarket(decodeURIComponent(mk)) || targetMarket();
+      var want = mk ? giftAvailFor(t.productId, mk) : '';
+      var tt = want ? { productId: t.productId, availabilityId: want, skuId: t.skuId || '0010' } : t;
+      var n = 0;
+      var pg = String(g.productId).toUpperCase(), pi = String(tt.productId).toUpperCase();
+      arr.forEach(function (it) {
+        if (!it || !it.productId) return;
+        var pid = String(it.productId).toUpperCase();
+        if (pid !== pg && pid !== pi) return;
+        it.productId = pi;
+        it.availabilityId = String(tt.availabilityId).toUpperCase();
+        if (tt.skuId) it.skuId = String(tt.skuId);
+        n++;
+      });
+      if (!n) {
+        arr = [{ productId: String(tt.productId).toUpperCase(), skuId: String(tt.skuId || '0010'), availabilityId: String(tt.availabilityId).toUpperCase() }];
+        n = 1;
+      }
+      var out = s2.replace(/([?&]products=)[^&]*/, '$1' + encodeURIComponent(JSON.stringify(arr)));
+      log('[hard] URL 改写 products → ' + tt.productId + '/' + tt.availabilityId + ' (' + n + ')');
+      notify('✅ 付款 URL 已换内购', tt.productId, tt.availabilityId);
+      return out;
+    } catch (e) { log('rewriteBuynowUrl err', e); return u; }
+  }
+
+  // a) iframe.src / srcdoc / setAttribute
+  try {
+    var IFrame = PAGE.HTMLIFrameElement;
+    if (IFrame && IFrame.prototype) {
+      var dSrc = Object.getOwnPropertyDescriptor(IFrame.prototype, 'src');
+      if (dSrc && dSrc.set && dSrc.get) {
+        Object.defineProperty(IFrame.prototype, 'src', {
+          configurable: true,
+          enumerable: dSrc.enumerable,
+          get: dSrc.get,
+          set: function (v) { return dSrc.set.call(this, rewriteBuynowUrl(v)); }
+        });
+      }
+      var dAttr = PAGE.Element && PAGE.Element.prototype && PAGE.Element.prototype.setAttribute;
+      if (dAttr) {
+        PAGE.Element.prototype.setAttribute = function (name, value) {
+          try { if (String(name).toLowerCase() === 'src') value = rewriteBuynowUrl(value); } catch (e) {}
+          return dAttr.call(this, name, value);
+        };
+      }
+    }
+  } catch (e) { log('iframe hook err', e); }
+
+  // b) form.action 赋值
+  try {
+    var HForm0 = PAGE.HTMLFormElement;
+    if (HForm0 && HForm0.prototype) {
+      var dAct = Object.getOwnPropertyDescriptor(HForm0.prototype, 'action');
+      if (dAct && dAct.set && dAct.get) {
+        Object.defineProperty(HForm0.prototype, 'action', {
+          configurable: true,
+          enumerable: dAct.enumerable,
+          get: dAct.get,
+          set: function (v) { return dAct.set.call(this, rewriteBuynowUrl(v)); }
+        });
+      }
+    }
+  } catch (e) { log('form action hook err', e); }
 
   // 兜底：所有 form 在 submit / requestSubmit 前统一检查
   const HForm = PAGE.HTMLFormElement;
@@ -1521,7 +1702,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.6.1 injected (批准标记多通道 + poid 兜底 + orders/buynow 一致替换)');
+  log('v4.6.2 injected (强制改写层 + iframe/action hook + orders/buynow 一致替换)');
 
   // ============================================================
   // 菜单
@@ -1612,7 +1793,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.6.1', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.6.2', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1634,5 +1815,5 @@
     return _origDel(k);
   };
 
-  log("v4.6.1 injected (licensed build)");
+  log("v4.6.2 injected (licensed build)");
 })();
