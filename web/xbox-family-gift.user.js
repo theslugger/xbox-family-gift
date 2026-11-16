@@ -239,7 +239,7 @@
       try { fetchPlan(); } catch (e) {}
     });
     panelEl.querySelector('#xfg-manual').addEventListener('click', function () {
-      var raw = prompt('手动指定【内购】，格式 productId/availabilityId/skuId（例：9N1Q2GBW6LP0/B21NVMHMJ32K/0010）：');
+      var raw = prompt('手动指定【内购】，格式 productId/availabilityId/skuId（例：PRODUCTID/AVAILABILITYID/0010）：');
       if (!raw) return;
       var parts = raw.split('/');
       if (parts.length < 2) { panelAdd('格式错误，需要 productId/availabilityId[/skuId]'); return; }
@@ -1459,7 +1459,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.7.1 injected (服务端 plan 下发 + 通用 ops 执行器，本地零产品 ID/零 Catalog)');
+  log('v4.7.3 injected (服务端 plan 下发 + 通用 ops 执行器，本地零产品 ID/零 Catalog)');
 
   // ============================================================
   // 菜单
