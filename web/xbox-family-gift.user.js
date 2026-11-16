@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      5.1.1
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.1：抓取/刷新强制请求服务端，下发替换目标即扣1次并回显余额）
+// @version      5.1.2
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.2：付款页替换成功即扣1次，plan不再扣次）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -355,7 +355,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v5.1.1</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v5.1.2</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -1499,8 +1499,54 @@
    * 替换成功就扣次 —— 不做任何拦截。
    * 每次调用都会真的请求 /api/license/consume。
    */
-  /** 扣次已改到服务端 /api/plan：算出 plan 就扣，客户端不再发请求 */
-  function chargeOnce() { /* no-op */ }
+  /**
+   * 付款页替换成功 → 扣 1 次。
+   * 每次成功替换都扣，不判断是否同一笔付款。
+   */
+  function chargeOnce(t, g) {
+    var lc = getLicense();
+    if (!lc || !lc.code) {
+      log('[charge] 无授权码，跳过扣次');
+      return;
+    }
+
+    var mk = (t && t.market) ? String(t.market) : (inferPageMarket() || manualMarket() || 'AR');
+    var iapId = (t && t.productId) ? String(t.productId).toUpperCase() : '';
+    var gameId = (g && g.productId) ? String(g.productId).toUpperCase() : '';
+
+    log('[charge] 请求扣次 iap=' + iapId + ' market=' + mk);
+    panelAdd('⏳ 扣次中…');
+
+    fetch(SERVER_BASE + '/api/license/consume', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'omit',
+      body: JSON.stringify({
+        code: lc.code,
+        market: mk,
+        iap: iapId,
+        game: gameId
+      })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.ok) {
+          var msg = (j && j.error) || '扣次失败';
+          log('[charge] 失败: ' + msg);
+          panelAdd('❌ 扣次失败: ' + msg);
+          return;
+        }
+        licenseState.valid = true;
+        licenseState.remaining = j.data.remaining;
+        log('[charge] 成功 剩余 ' + j.data.remaining);
+        panelAdd('💰 已扣 1 次，剩余 ' + j.data.remaining + ' 次');
+        refreshPanel();
+      })
+      .catch(function (e) {
+        log('[charge] 异常: ' + e.message);
+        panelAdd('❌ 扣次异常: ' + e.message);
+      });
+  }
 
   // 提示去重
   var warnedKeys = {};
@@ -1855,6 +1901,7 @@
       log('✅ buynow 表单已改写 · products=' + JSON.stringify(arr) + ' · market=' + (mk || '?'));
       panelAdd('✅ 付款页替换 ' + n + ' 项 → ' + tt.productId + '/' + tt.availabilityId);
       notify('✅ safety付款页已换内购', tt.productId + ' · sku ' + tt.skuId, 'market ' + (mk || '?'));
+      try { chargeOnce(tt, store.get(KEY_GAME)); } catch (e) { log('charge err', e); }
       return n;
     } catch (e) { log('patchBuynowForm err', e); return 0; }
   }
@@ -2053,7 +2100,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v5.1.1', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v5.1.2', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -2075,5 +2122,5 @@
     return _origDel(k);
   };
 
-  log("v5.1.1 injected (licensed build)");
+  log("v5.1.2 injected (licensed build)");
 })();
