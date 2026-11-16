@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      5.1.0
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.0：扣次移到服务端，算plan即扣，客户端不再发扣次请求）
+// @version      5.1.1
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.1：抓取/刷新强制请求服务端，下发替换目标即扣1次并回显余额）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -355,7 +355,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v5.1.0</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v5.1.1</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -397,7 +397,7 @@
       clearChargedSession();
       panelAdd('已刷新 · 重新读取本地面板数据');
       try { verifyLicense(); } catch (e) {}
-      if (grabState()) { try { fetchPlan(); } catch (e) {} }
+      if (grabState()) { try { fetchPlan(true); } catch (e) {} }
       refreshPanel();
     });
     panelEl.querySelector('#xfg-grab1').addEventListener('click', function () { grabTo('game'); });
@@ -494,8 +494,8 @@
     var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
     if (g && g.productId && t && t.productId) {
       store.set(KEY_LOCK, true);
-      panelAdd('🔒 ①② 齐备，向服务端请求替换目标');
-      try { fetchPlan(); } catch (e) {}
+      panelAdd('🔒 ①② 齐备，向服务端请求替换目标（将扣 1 次）');
+      try { fetchPlan(true); } catch (e) {}
     }
     refreshPanel();
     return true;
@@ -721,7 +721,12 @@
         var lic = getLicense();
         if (!lic) return '<div style="margin-top:2px;font-size:11px;color:#f88">授权：未激活</div>';
         if (!licenseState.valid) return '<div style="margin-top:2px;font-size:11px;color:#f88">授权：校验中/异常</div>';
-        return '<div style="margin-top:2px;font-size:11px;color:#7fd">授权：剩余 <b>' + licenseState.remaining + '</b> 次</div>';
+        var extra = '';
+        var cp = cachedPlan();
+        if (cp && typeof cp.remaining === 'number') {
+          extra = ' <span style="color:#ff0">（服务端）</span>';
+        }
+        return '<div style="margin-top:2px;font-size:11px;color:#7fd">授权：剩余 <b>' + licenseState.remaining + '</b> 次' + extra + '</div>';
       })();
     updateButtons();
 
@@ -932,14 +937,17 @@
   }
 
   /** 向服务端要 ops（带 Promise 去重） */
-  function fetchPlan() {
+  function fetchPlan(force) {
     var key = planKeyOf();
     if (!key) {
       log('[plan] 缺少 ①② 或授权码，跳过请求');
+      panelAdd('⚠️ plan 未请求：缺少 ①② 或授权码');
       return Promise.resolve(null);
     }
-    var hit = cachedPlan();
-    if (hit) return Promise.resolve(hit);
+    if (!force) {
+      var hit = cachedPlan();
+      if (hit) { log('[plan] 使用本地缓存（不请求服务端）'); return Promise.resolve(hit); }
+    }
     if (planPending) return planPending;
 
     var g = store.get(KEY_GAME), t = store.get(KEY_IAP), lc = getLicense();
@@ -973,7 +981,12 @@
           log('[plan] selection changed; discard stale response');
           return fetchPlan();
         }
-        var e = { key: key, ops: o.j.ops || [], meta: o.j.meta || {}, sig: o.j.sig, ttl: o.j.ttl || 600, at: Date.now() };
+        var e = {
+          key: key, ops: o.j.ops || [], meta: o.j.meta || {},
+          sig: o.j.sig, ttl: o.j.ttl || 600, at: Date.now(),
+          remaining: (typeof o.j.remaining === 'number') ? o.j.remaining : undefined,
+          charged: !!o.j.charged
+        };
         store.set(KEY_PLAN, e);
 
         // 服务端算出 plan 时已经扣过次了：同步余额到面板
@@ -2040,7 +2053,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v5.1.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v5.1.1', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -2062,5 +2075,5 @@
     return _origDel(k);
   };
 
-  log("v5.1.0 injected (licensed build)");
+  log("v5.1.1 injected (licensed build)");
 })();
