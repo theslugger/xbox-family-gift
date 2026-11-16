@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.9.1
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.1：手动获取ID + 面板大字显示 + 替换全程日志）
+// @version      4.9.2
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.2：按钮获取后直接显示对应ID）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -185,7 +185,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.9.1</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.9.2</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -324,6 +324,64 @@
     refreshPanel();
   }
 
+  /** 按钮获取到 ID 后直接显示 ID；未获取时显示「获取…」 */
+  function updateButtons() {
+    if (!panelEl) return;
+    var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+
+    var b1 = panelEl.querySelector('#xfg-grab1');
+    if (b1) {
+      if (g && g.productId) {
+        b1.textContent = '① ' + g.productId;
+        b1.title = '点击可覆盖为当前页面 ID（' + g.productId + '）';
+        b1.style.background = '#12401a';
+        b1.style.color = '#8fff9f';
+        b1.style.fontFamily = 'ui-monospace,Menlo,monospace';
+        b1.style.fontSize = '12.5px';
+        b1.style.fontWeight = '700';
+        b1.style.letterSpacing = '.5px';
+        b1.style.borderColor = '#2f7a3a';
+      } else {
+        b1.textContent = '获取①游戏ID';
+        b1.title = '打开游戏页面后点击';
+        b1.style.cssText = b1.style.cssText.replace(/background:[^;]+;/, 'background:#0d2a0d;')
+          .replace(/color:[^;]+;/, 'color:#7fd;');
+        b1.style.background = '#0d2a0d';
+        b1.style.color = '#7fd';
+        b1.style.fontFamily = '';
+        b1.style.fontSize = '';
+        b1.style.fontWeight = '';
+        b1.style.letterSpacing = '';
+        b1.style.borderColor = '#2a5';
+      }
+    }
+
+    var b2 = panelEl.querySelector('#xfg-grab2');
+    if (b2) {
+      if (t && t.productId) {
+        b2.textContent = '② ' + t.productId;
+        b2.title = '点击可覆盖为当前页面 ID（' + t.productId + '）';
+        b2.style.background = '#12401a';
+        b2.style.color = '#8fff9f';
+        b2.style.fontFamily = 'ui-monospace,Menlo,monospace';
+        b2.style.fontSize = '12.5px';
+        b2.style.fontWeight = '700';
+        b2.style.letterSpacing = '.5px';
+        b2.style.borderColor = '#2f7a3a';
+      } else {
+        b2.textContent = '获取②内购ID';
+        b2.title = '打开金币页面后点击';
+        b2.style.background = '#0d2a0d';
+        b2.style.color = '#7fd';
+        b2.style.fontFamily = '';
+        b2.style.fontSize = '';
+        b2.style.fontWeight = '';
+        b2.style.letterSpacing = '';
+        b2.style.borderColor = '#2a5';
+      }
+    }
+  }
+
   function refreshPanel() {
     if (!panelEl) return;
     var st = panelEl.querySelector('#xfg-state');
@@ -366,6 +424,7 @@
         if (!licenseState.valid) return '<div style="margin-top:2px;font-size:11px;color:#f88">授权：校验中/异常</div>';
         return '<div style="margin-top:2px;font-size:11px;color:#7fd">授权：剩余 <b>' + licenseState.remaining + '</b> 次</div>';
       })();
+    updateButtons();
   }
 
   // ============================================================
@@ -1525,7 +1584,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.9.1 injected (手动抓ID + 面板大字 + 替换日志)');
+  log('v4.9.2 injected (按钮显示ID)');
 
   // ============================================================
   // 菜单
@@ -1616,7 +1675,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.9.1', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.9.2', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1638,5 +1697,5 @@
     return _origDel(k);
   };
 
-  log("v4.9.1 injected (licensed build)");
+  log("v4.9.2 injected (licensed build)");
 })();
