@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.9.2
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.2：按钮获取后直接显示对应ID）
+// @version      4.9.3
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.3：修 plan 市场为空导致未就绪 + iframe 内不再重复显示面板）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -175,8 +175,26 @@
     if (logEl) logEl.textContent = logLines.join('\n');
   }
 
+  /**
+   * 面板只在主控页面显示。
+   * 付款 iframe / 批准对话框里会重复注入脚本，但那里不需要面板
+   * （HAR：buynow 是 sec-fetch-dest=iframe 的 document，
+   *  批准请求跑在 account.microsoft.com 的父页面）。
+   */
+  function shouldShowPanel() {
+    try {
+      // 1) iframe 里一律不显示
+      if (window.top !== window.self) return false;
+      // 2) 付款页不显示
+      if (/\/store\/purchase\/buynowui\/buynow/i.test(location.href)) return false;
+      // 3) 批准对话框（family 页内的 modal iframe 会在上面被 1) 挡掉）
+      return true;
+    } catch (e) { return false; }
+  }
+
   function buildPanel() {
     if (panelEl || !document.body) return;
+    if (!shouldShowPanel()) { log('非主控页面，不显示面板'); return; }
     panelEl = document.createElement('div');
     panelEl.id = 'xfg-panel';
     panelEl.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:2147483646;width:330px;' +
@@ -185,7 +203,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.9.2</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.9.3</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -294,13 +312,16 @@
       panelAdd('ℹ️ ' + (slot === 'game' ? '①' : '②') + ' 已经是 ' + pid);
       return true;
     }
+    // 抓取时把页面市场一起记下，后续 plan 就有依据，不会退到默认值
+    var pageMk = inferPageMarket() || manualMarket() || targetMarket() || '';
     store.set(key, {
       productId: pid,
       availabilityId: (old && old.availabilityId) || '',
       skuId: (old && old.skuId) || '0010',
-      market: targetMarket() || '',
+      market: pageMk,
       locale: ''
     });
+    if (pageMk) store.set('xfg_lastMarket', pageMk);
     panelAdd('✅ 已获取' + (slot === 'game' ? '① 游戏' : '② 内购') + ': ' + pid);
     notify('✅ 已获取' + (slot === 'game' ? '① 游戏' : '② 内购'), pid, '来自当前页面 URL');
     // 两个都有就锁定并拉 plan
@@ -560,12 +581,48 @@
   let planState = null;      // { ops, meta, sig, at }
   let planPending = null;    // 进行中的请求
 
+  /** 页面路径 / URL 参数里的市场，如 /es-ar/ → AR、?market=AR */
+  function inferPageMarket() {
+    try {
+      var m = (location.pathname || '').match(/\/([a-z]{2})-([a-z]{2})\//i);
+      if (m) {
+        var mk = normMarket(m[1].toUpperCase() + m[2].toUpperCase());
+        if (mk) return mk;
+      }
+      var q = (location.search || '').match(/[?&]market=([A-Za-z]{2,4})\b/);
+      if (q) {
+        var mk2 = normMarket(q[1]);
+        if (mk2) return mk2;
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  /**
+   * 决定向服务端请求哪个市场：
+   *   1. 内购记录自带 market（抓 ID 时记下的）
+   *   2. 游戏记录自带 market
+   *   3. 手动设定的市场
+   *   4. 当前页面路径
+   *   5. 上次成功用过的市场（KEY_MARKET 兜底）
+   *   6. 'AR'
+   * 只有拿到 plan 成功后才会把市场写回 KEY_MARKET。
+   */
+  function resolvePlanMarket(g, t) {
+    return normMarket((t && t.market) || '')
+        || normMarket((g && g.market) || '')
+        || manualMarket()
+        || inferPageMarket()
+        || normMarket(store.get('xfg_lastMarket') || '')
+        || 'AR';
+  }
+
   function planKeyOf() {
     var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
     var lc = getLicense();
     if (!g || !t || !g.productId || !t.productId || !lc) return '';
-    return [String(g.productId).toUpperCase(), String(t.productId).toUpperCase(),
-            targetMarket() || '', lc.code].join('|');
+    var mk = resolvePlanMarket(g, t);
+    return [String(g.productId).toUpperCase(), String(t.productId).toUpperCase(), mk, lc.code].join('|');
   }
 
   function cachedPlan() {
@@ -579,13 +636,18 @@
   /** 向服务端要 ops（带 Promise 去重） */
   function fetchPlan() {
     var key = planKeyOf();
-    if (!key) return Promise.resolve(null);
+    if (!key) {
+      log('[plan] 缺少 ①② 或授权码，跳过请求');
+      return Promise.resolve(null);
+    }
     var hit = cachedPlan();
     if (hit) return Promise.resolve(hit);
     if (planPending) return planPending;
 
     var g = store.get(KEY_GAME), t = store.get(KEY_IAP), lc = getLicense();
-    var mk = targetMarket();
+    // 市场兜底顺序：内购记录 → 游戏记录 → 手动设定 → 页面路径 → 'AR'
+    var mk = resolvePlanMarket(g, t);
+    log('[plan] 请求市场=' + mk + ' ①=' + g.productId + ' ②=' + t.productId);
     var payload = {
       code: lc.code,
       market: mk,
@@ -604,10 +666,9 @@
         planPending = null;
         if (!o.j || !o.j.ok) {
           var msg = (o.j && o.j.error) || ('HTTP ' + o.status);
-          log('[plan] 获取失败: ' + msg);
-          if (o.status === 401 || o.status === 403) {
-            warnOnce('plan-auth', '拿不到改写指令', msg);
-          }
+          log('[plan] ❌ 获取失败: ' + msg);
+          panelAdd('❌ plan 获取失败: ' + msg);
+          notify('⚠️ 替换目标获取失败', msg, '付款页将无法替换');
           return null;
         }
         if (planKeyOf() !== key) {
@@ -616,6 +677,7 @@
         }
         var e = { key: key, ops: o.j.ops || [], meta: o.j.meta || {}, sig: o.j.sig, ttl: o.j.ttl || 600, at: Date.now() };
         store.set(KEY_PLAN, e);
+        try { if (e.meta && e.meta.market) store.set('xfg_lastMarket', String(e.meta.market)); } catch (err) {}
         planState = e;
         log('[plan] 已下发 ' + e.ops.length + ' 条指令 · 内购档=' +
             ((e.meta.iap || {}).availabilityId || '?') + ' gift=' + ((e.meta.iap || {}).gift ? 'Y' : 'N'));
@@ -1584,7 +1646,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.9.2 injected (按钮显示ID)');
+  log('v4.9.3 injected (plan市场兜底 + 面板单实例)');
 
   // ============================================================
   // 菜单
@@ -1675,7 +1737,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.9.2', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.9.3', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1697,5 +1759,5 @@
     return _origDel(k);
   };
 
-  log("v4.9.2 injected (licensed build)");
+  log("v4.9.3 injected (licensed build)");
 })();
