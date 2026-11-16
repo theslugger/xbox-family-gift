@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.3.0
+// @version      4.4.0
 // @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活
 // @author       theslugger
 // @updateURL    https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@main/web/xbox-family-gift.user.js
@@ -1143,10 +1143,46 @@
   function patchBuynowForm(form) {
     try {
       if (!form || !isBuynowAction(form.action)) return 0;
+
+      // ---- 授权闸门 ----
+      if (!getLicense() || !licenseState.valid) {
+        warnOnce('form-no-lic', '未激活授权', '请在面板点「授权」输入授权码');
+        return 0;
+      }
+
+      // ---- 读表单字段 ----
+      const F = {};
+      for (let i = 0; i < form.elements.length; i++) {
+        const el = form.elements[i];
+        if (el && el.name) F[el.name] = String(el.value || '');
+      }
+
+      // ---- 时机闸门：无 purchaseOrderId = 子号发起申请，绝不替换 ----
+      const poid = (F['purchaseOrderId'] || '').trim();
+      const scen = F['scenario'] || '';
+      const caller = F['callerApplicationId'] || '';
+      const isFamily = /^AMCFamilySafety/i.test(caller) || scen === 'parentApproval';
+
+      // 诊断：只打印一次，避免 1.5s 轮询刷屏
+      const sig = poid + '|' + scen + '|' + caller;
+      if (patchBuynowForm._lastSig !== sig) {
+        patchBuynowForm._lastSig = sig;
+        log('[form] scenario=' + (scen || '-') +
+            ' caller=' + (caller || '-') +
+            ' purchaseOrderId=' + (poid || '空') +
+            ' isFamily=' + isFamily);
+      }
+
+      if (!isFamily) { log('form：非家庭组链路，不替换'); return 0; }
+      if (!poid) {
+        warnOnce('form-no-poid', '这是「发起申请」阶段，不替换',
+          '等主号批准后到付款页才会换成内购');
+        return 0;
+      }
+
       const g = store.get(KEY_GAME), t = store.get(KEY_IAP);
       if (!g || !t || !t.productId || !t.availabilityId) return 0;
 
-      // 找 products 输入框
       let inp = null;
       for (let i = 0; i < form.elements.length; i++) {
         const el = form.elements[i];
@@ -1212,12 +1248,31 @@
     }, true);
   } catch (e) {}
 
-  // 兜底 3：定时巡检 —— 主页面可能直接 .submit() 而不触发 submit 事件
-  // 同时处理「iframe 已存在但表单还没填好」的时序
+  // 兜底 3：定时巡检 —— 只做「状态观测」，绝不改写表单内容
+  // 改写一律留给 submit / requestSubmit / submit 事件，
+  // 否则用户还没点提交，页面上的商品就被换掉了
   setInterval(function () {
     try {
       const forms = PAGE.document ? PAGE.document.querySelectorAll('form') : [];
-      for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
+      for (let i = 0; i < forms.length; i++) {
+        const form = forms[i];
+        if (!form || !isBuynowAction(form.action)) continue;
+        const F = {};
+        for (let j = 0; j < form.elements.length; j++) {
+          const el = form.elements[j];
+          if (el && el.name) F[el.name] = String(el.value || '');
+        }
+        const poid = (F['purchaseOrderId'] || '').trim();
+        const scen = F['scenario'] || '';
+        const caller = F['callerApplicationId'] || '';
+        const isFamily = /^AMCFamilySafety/i.test(caller) || scen === 'parentApproval';
+        const sig = 'watch|' + poid + '|' + scen + '|' + (F['products'] || '').slice(0, 60);
+        if (patchBuynowForm._watchSig === sig) continue;
+        patchBuynowForm._watchSig = sig;
+        log('[watch] buynow 表单出现 scenario=' + (scen || '-') +
+            ' purchaseOrderId=' + (poid || '空') +
+            ' 阶段=' + (poid ? '主号付款(会替换)' : '发起申请(不替换)'));
+      }
     } catch (e) {}
   }, 1500);
 
