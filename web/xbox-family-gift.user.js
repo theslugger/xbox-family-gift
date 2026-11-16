@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.6.0
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.6.0：对齐手机端 sgmodule v8 的 approved 判据，orders/buynow 一致换内购）
+// @version      4.6.1
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.6.1：批准标记多通道 + purchaseOrderId 兜底，修「未检测到主号批准」）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -184,7 +184,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.6.0</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.6.1</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -347,7 +347,8 @@
       '<div>① 游戏: <b style="color:#7fd">' + (g ? g.productId + '<br><span style="color:#888">avail ' + g.availabilityId + ' sku ' + g.skuId + (g.market ? ' · market ' + g.market : '') + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
       '<div style="margin-top:4px">② 内购: <b style="color:#7fd">' + (t ? t.productId + '<br><span style="color:#888">avail ' + t.availabilityId + ' sku ' + t.skuId + (t.market ? ' · market ' + t.market : '') + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
       '<div style="margin-top:4px">状态: ' + (lk ? '<b style="color:#ff0">🔒 已锁定</b>' : '<span style="color:#888">采集中</span>') +
-        (isApproved() ? ' <b style="color:#7fd">· 已批准✅</b>' : ' <span style="color:#888">· 待批准</span>') + '</div>' +
+        (isApproved() ? ' <b style="color:#7fd">· 已批准✅</b>' : ' <span style="color:#888">· 待批准</span>') +
+        ' <span style="color:#888">· orderId ' + (function(){var o=latestOrder();return o?String(o.id).slice(0,8):'无';})() + '</span>' + '</div>' +
       (function () {
         var lic = getLicense();
         if (!lic) return '<div style="margin-top:2px;color:#f77">授权: <b>未激活</b> — 点「授权」输入</div>';
@@ -940,38 +941,80 @@
   //   但 HAR 里 4.5.4 起 orders 一律不换，等于把手机端的关键动作丢了。
   //   这里恢复同样语义：approve 一落地就打标记，orders/buynow 都看它。
   // ============================================================
-  const KEY_APPROVED = 'xfg_approvedTime';
-  // ============================================================
-  // 跨标签同步队列（网页端必须补的东西）
   // ------------------------------------------------------------
-  // 手机端是整机 MITM，全局一份存储；网页端不行：
-  //   · 订单 POST /users/me/orders 发生在 account.microsoft.com 标签
-  //   · buynow iframe POST 发生在 www.microsoft.com 标签
-  //   · 脚本 @run-at document-start，orderId 很可能还没写进本案就切页面了
-  // 所以在 orders 里就把 orderId 投进队列，任何同源标签（含 www）都能读到。
-  // ============================================================
-  const KEY_ORDER_QUEUE = 'xfg_orderQueue';
-  function pushOrder(orderId, productId, skuId, market) {
-    if (!orderId) return;
-    var q = store.get(KEY_ORDER_QUEUE); if (!Array.isArray(q)) q = [];
-    q = q.filter(function (x) { return x && x.id !== orderId; });
-    q.push({ id: String(orderId), productId: productId || '', skuId: skuId || '', market: market || '', at: Date.now() });
-    if (q.length > 20) q = q.slice(-20);
-    store.set(KEY_ORDER_QUEUE, q);
-    log('[queue] 记录 orderId ' + orderId + ' product=' + productId);
+  // 网页端跨域问题的正解：本脚本 @grant GM_* → 有 Tampermonkey 跨域存储；
+  // @grant none 的旧构建会退回 localStorage，那一份是不跨域的。
+  // 所以批准标记必须走「多通道」：
+  //   1) GM 跨域存储（主通道，account 域写、www 域读得到）
+  //   2) 同域 localStorage + cookie（兜底，account 域内 orders 用）
+  //   3) window.name 不跨标签，跳过
+  // ------------------------------------------------------------
+  const KEY_APPROVED = 'xfg_approvedTime';
+  const KEY_APPROVED_TS = 'approvedTime';
+
+  function hasGM() { return typeof GM_setValue === 'function' && typeof GM_getValue === 'function'; }
+  function setCookie(k, v) {
+    try {
+      var host = location.hostname.split('.').slice(-2).join('.');
+      document.cookie = k + '=' + encodeURIComponent(String(v)) + '; path=/; domain=.' + host + '; max-age=86400; Secure; SameSite=None';
+    } catch (e) {}
   }
-  function latestOrder() {
-    var q = store.get(KEY_ORDER_QUEUE);
-    if (!Array.isArray(q) || !q.length) return null;
-    var now = Date.now();
-    var live = q.filter(function (x) { return x && x.id && (now - (x.at || 0)) < 60 * 60 * 1000; });
-    return live.length ? live[live.length - 1] : null;
+  function getCookie(k) {
+    try {
+      var m = document.cookie.match(new RegExp('(?:^|; )' + k + '=([^;]*)'));
+      return m ? decodeURIComponent(m[1]) : '';
+    } catch (e) { return ''; }
   }
 
-  function markApproved() { store.set(KEY_APPROVED, Date.now()); }
-  function approvedAt() { var v = store.get(KEY_APPROVED); return Number(v) || 0; }
-  function isApproved() { var t = approvedAt(); return !!t && (Date.now() - t) < 30 * 60 * 1000; }
-  function clearApproved() { store.del(KEY_APPROVED); }
+  function markApproved() {
+    var now = Date.now();
+    try { store.set(KEY_APPROVED, now); } catch (e) {}
+    try { store.set(KEY_APPROVED_TS, now); } catch (e) {}
+    setCookie('xfg_appr', now);
+    log('[approve] 打标 now=' + now + ' GM=' + (hasGM() ? 'YES' : 'NO') + ' host=' + location.host);
+  }
+  function approvedAt() {
+    var a = Number(store.get(KEY_APPROVED)) || 0;
+    var b = Number(store.get(KEY_APPROVED_TS)) || 0;
+    var c = Number(getCookie('xfg_appr')) || 0;
+    return Math.max(a, b, c);
+  }
+  // 只看「是否发生过批准」，不再按 30 分钟裁剪：
+  // 网页端 approve 在 account 标签、buynow 在 www 标签，
+  // 时间窗一旦跨标签读不到就会误判成「未批准」，这正是这次的故障点。
+  function isApproved() { return approvedAt() > 0; }
+  function clearApproved() {
+    store.del(KEY_APPROVED); store.del(KEY_APPROVED_TS);
+    try {
+      var host = location.hostname.split('.').slice(-2).join('.');
+      document.cookie = 'xfg_appr=; path=/; domain=.' + host + '; max-age=0';
+    } catch (e) {}
+  }
+
+  // ------------------------------------------------------------
+  // 兜底推断：网页端点「批准」不一定走 /family/api/buy/requests/approve
+  // （HAR 里那个接口是有的，但有的账号走的是另一条「允许一次购买」的路径）。
+  // 只要出现下面任一信号，就认为已进入最终付款阶段：
+  //   a) approve 接口命中（主通道，精确）
+  //   b) 出现带 purchaseOrderId 的 buynow 表单（说明订单已被批准并建好）
+  //   c) 主号页面出现批准成功提示（DOM 兜底）
+  // ------------------------------------------------------------
+  function isFinalPayStage(poid) {
+    return isApproved() || !!(poid && String(poid).trim());
+  }
+  function inferApprovedFromDom() {
+    if (isApproved()) return;
+    try {
+      var txt = (document.body && document.body.innerText) || '';
+      if (/已批准|批准成功|Approved|购买已批准|批准此购买|allow this purchase/i.test(txt)) {
+        // 只在 family 页面才采信，避免商品页文案误触
+        if (/account\.microsoft\.com\/family/i.test(location.href) || location.hostname === 'account.microsoft.com') {
+          markApproved();
+          log('[approve] DOM 推断：主号页面出现批准成功提示 → 打标');
+        }
+      }
+    } catch (e) {}
+  }
 
   // 一次赠礼只扣一次：同一 giftId 内只在首次成功替换时扣
   let giftConsumed = false;
@@ -999,6 +1042,11 @@
     } catch (e) {}
     var m = String(bodyStr).match(/"skuId"\s*:\s*"([^"]+)"/);
     return m ? m[1] : '';
+  }
+  function readPoidFromForm(bodyStr) {
+    var m = String(bodyStr).match(/purchaseOrderId=([^&]+)/i);
+    if (!m) return '';
+    try { return decodeURIComponent(m[1]); } catch (e) { return m[1]; }
   }
   function readMarket(bodyStr) {
     try {
@@ -1071,7 +1119,7 @@
       var qsku = readFirstSkuId(bodyStr);
       var qmk = readMarket(bodyStr);
       if (qid) pushOrder(qid, qpid, qsku, qmk);
-      if (!isApproved()) {
+      if (!isFinalPayStage(qid)) {
         log('[orders] 未批准（子号发起申请 / 审批页展示）→ 保持原样');
         return null;
       }
@@ -1127,8 +1175,8 @@
           return null;
         }
       }
-      if (!isApproved()) {
-        log('[buynow] 尚未收到 approve 标记 → 保守不替换');
+      if (!isFinalPayStage(readPoidFromForm(bodyStr))) {
+        log('[buynow] 既无 approve 标记也无 purchaseOrderId → 保守不替换');
         return null;
       }
       const r = swapBuynowForm(bodyStr, g, t);
@@ -1376,8 +1424,8 @@
           return 0;
         }
       }
-      if (!isApproved()) {
-        log('[form] 尚未收到 approve 标记 → 保守不替换');
+      if (!isFinalPayStage(poid)) {
+        log('[form] 既无 approve 标记也无 purchaseOrderId → 保守不替换');
         warnOnce('form-no-appr', '还没检测到主号批准', '等主号在 family 页点「批准」后再到付款页');
         return 0;
       }
@@ -1467,12 +1515,13 @@
   // 兜底 3：定时巡检 —— 主页面可能直接 .submit() 而不触发 submit 事件
   // 同时处理「iframe 已存在但表单还没填好」的时序
   setInterval(function () {
+    try { inferApprovedFromDom(); } catch (e) {}
     try {
       const forms = PAGE.document ? PAGE.document.querySelectorAll('form') : [];
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.6.0 injected (approve 打标 + orders/buynow 一致替换 + Gift 档收敛)');
+  log('v4.6.1 injected (批准标记多通道 + poid 兜底 + orders/buynow 一致替换)');
 
   // ============================================================
   // 菜单
@@ -1505,6 +1554,11 @@
         store.del(KEY_GAME); store.del(KEY_IAP); store.del(KEY_LOCK);
         clearApproved(); store.del(KEY_ORDER_QUEUE);
         notify("已清空", "已重置", "请重新加购");
+      });
+      GM_registerMenuCommand("手动标记已批准(兜底)", () => {
+        markApproved();
+        notify("已手动标记批准", "approvedTime=" + approvedAt(), "orders/buynow 将按已批准处理");
+        refreshPanel();
       });
       GM_registerMenuCommand("查看 orderId 队列", () => {
         var q = store.get(KEY_ORDER_QUEUE);
@@ -1558,7 +1612,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.6.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.6.1', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1580,5 +1634,5 @@
     return _origDel(k);
   };
 
-  log("v4.6.0 injected (licensed build)");
+  log("v4.6.1 injected (licensed build)");
 })();
