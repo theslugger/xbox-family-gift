@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.5.2
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活
+// @version      4.5.3
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.5.3：付款页补提交闸门，修付款报错）
 // @author       theslugger
-// @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
-// @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
+// @updateURL    https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@main/web/xbox-family-gift.user.js
+// @downloadURL  https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@main/web/xbox-family-gift.user.js
 // @match        https://www.xbox.com/*
 // @match        https://www.microsoft.com/*
 // @match        https://account.microsoft.com/*
@@ -645,20 +645,6 @@
     // 实测值可能是 AMCFamilySafetyApp / AMCFamilySafetyWeb，统一按前缀匹配
     const isFamilySafety = /^AMCFamilySafety/i.test(caller) || scen === 'parentApproval';
     if (!isFamilySafety) return null;
-
-    // ============================================================
-    // 时机：子号「Pide permiso primero / Preguntar ahora」也会走 buynow，
-    //   那时订单还没建立，purchaseOrderId 为空 —— 这一步不能换，
-    //   否则发起的就是内购申请，家庭组看到的是金币而不是游戏。
-    //   只有主号批准后付款（带 purchaseOrderId）才替换。
-    // ============================================================
-    const poid = d['purchaseOrderId'] ? unq(d['purchaseOrderId']).trim() : '';
-    if (!poid) {
-      log('buynow：无 purchaseOrderId，属于「发起家庭组申请」阶段 → 不替换');
-      return null;
-    }
-    log('buynow：有 purchaseOrderId=' + poid + ' → 主号付款阶段，允许替换');
-
     if (d['products'] === undefined) return null;
     let arr; try { arr = JSON.parse(unq(d['products'])); } catch (e) { return null; }
     if (!Array.isArray(arr)) return null;
@@ -863,31 +849,23 @@
     //   否则（子号发起的普通购买）保持原样，避免变成充值型购买
     // ============================================================
     if (/purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders/.test(url)) {
-      // ============================================================
-      // 拦截：只要订单里的商品就是已记录的游戏，说明这是「子号发起购买申请」
-      //   阶段（或批准时创建游戏订单），这里绝不能换成内购，
-      //   否则发起的就是充值型购买，家庭组看到的也会是金币而不是游戏。
-      //   真正的替换点只有一个：主号最后付款的 buynow 表单。
-      // ============================================================
+      // 订单里就是游戏本身 = 子号发起申请 / 批准时建单，此时绝不能换成内购
+      // 否则建出来的是「内购订单」，付款页校验必然失败（这就是 4.5.x 付款报错的直接原因）
+      // 替换点只有一个：主号在付款页点付款那一刻
       var hasGame = false, hasIap = false;
       try {
-        var parsed = JSON.parse(bodyStr);
-        (parsed.items || []).forEach(function (it) {
+        (JSON.parse(bodyStr).items || []).forEach(function (it) {
           if (!it || !it.productId) return;
           if (g && it.productId === g.productId) hasGame = true;
           if (t && it.productId === t.productId) hasIap = true;
         });
-      } catch (e) {
-        log('[orders] 解析失败，原文前120字: ' + String(bodyStr).slice(0, 120));
-      }
-
+      } catch (e) { log('orders：body 解析失败，按原文判断'); }
+      log('[orders] 游戏项=' + hasGame + ' 内购项=' + hasIap);
       if (hasGame && !hasIap) {
-        log('orders：订单里是游戏本身 → 属于发起购买申请阶段，不替换（等主号付款页）');
+        log('orders：订单商品就是游戏 → 发起申请阶段，不替换（等付款页）');
         return null;
       }
-
       var isFamilyOrder = /AMCFamilySafety/i.test(bodyStr) || /parentApproval/i.test(bodyStr);
-      log('[orders] 游戏项=' + hasGame + ' 内购项=' + hasIap + ' 判定家庭组=' + isFamilyOrder);
       if (!isFamilyOrder) {
         log('orders：非家庭组批准场景，保持原样（等主号付款页再换）');
         return null;
@@ -901,34 +879,10 @@
       return null;
     }
     if (/www\.microsoft\.com\/store\/purchase\/buynowui\/buynow/.test(url)) {
-      // ---- 诊断：把 buynow 的关键参数全打出来 ----
-      try {
-        var dd = {};
-        bodyStr.split('&').forEach(function (p) {
-          var i = p.indexOf('=');
-          if (i < 0) return;
-          dd[decodeURIComponent(p.slice(0, i))] = decodeURIComponent(p.slice(i + 1));
-        });
-        var prodArr = [];
-        try { prodArr = JSON.parse(dd['products'] || '[]'); } catch (e) {}
-        log('[buynow] scenario=' + (dd['scenario'] || '-') +
-            ' caller=' + (dd['callerApplicationId'] || '-') +
-            ' purchaseOrderId=' + (dd['purchaseOrderId'] || '-') +
-            ' layout=' + (dd['layout'] || '-') +
-            ' parentHostName=' + (dd['parentHostName'] || '-') +
-            ' 首项=' + ((prodArr[0] && prodArr[0].productId) || '?'));
-      } catch (e) {
-        log('[buynow] 参数解析失败');
-      }
-      // buynow：必须是「account.microsoft.com 发起的家庭组批准」链路
-      // 从 xbox.com 发起的普通购买（callerApplicationId=XboxCom, parentHostName=www.xbox.com）
-      // 一律不碰
-      var hostM = bodyStr.match(/parentHostName=([^&]+)/i);
-      var parentHost = hostM ? decodeURIComponent(hostM[1]).toLowerCase() : '';
-      var isAcctHost = /account\.microsoft\.com$/i.test(parentHost);
+      // buynow 必须是家庭组批准链路
       var isFam = /AMCFamilySafety/i.test(bodyStr) || /parentApproval/i.test(bodyStr);
-      if (!isAcctHost || !isFam) {
-        log('buynow：host=' + (parentHost || '空') + ' 非 account.microsoft.com 或非家庭组链路 → 不替换');
+      if (!isFam) {
+        log('buynow：非家庭组链路，不替换');
         return null;
       }
       const r = swapBuynowForm(bodyStr, g, t);
@@ -1146,66 +1100,31 @@
       if (!form || !isBuynowAction(form.action)) return 0;
 
       // ---- 授权闸门 ----
-      if (!getLicense() || !licenseState.valid) {
-        warnOnce('form-no-lic', '未激活授权', '请在面板点「授权」输入授权码');
-        return 0;
-      }
+      if (!getLicense() || !licenseState.valid) { warnOnce('form-no-lic', '未激活授权', '请在面板点「授权」输入授权码'); return 0; }
 
-      // ---- 读表单字段 ----
+      // ---- 读字段 ----
       const F = {};
       for (let i = 0; i < form.elements.length; i++) {
         const el = form.elements[i];
         if (el && el.name) F[el.name] = String(el.value || '');
       }
-
-      // ============================================================
-      // 严格白名单：只有「主张号在 family 页面批准」这一条链路才替换
-      //
-      // HAR 证据（www.xbox.com 上的普通购买，绝不能碰）：
-      //   origin: https://www.xbox.com
-      //   callerApplicationId=XboxCom
-      //   parentHostName=www.xbox.com
-      //   cssOverride=XboxCom2NewUI
-      //   无 scenario / purchaseOrderId 字段
-      //
-      // 家庭组批准链路的特征（三者至少命中一个且来自 account.microsoft.com）：
-      //   parentHostName=account.microsoft.com
-      //   cssOverride=AMCFamilySafety
-      //   callerApplicationId=AMCFamilySafetyWeb/App
-      // ============================================================
       const caller = F['callerApplicationId'] || '';
       const scen = F['scenario'] || '';
-      const parentHost = (F['parentHostName'] || '').toLowerCase();
-      const cssOv = F['cssOverride'] || '';
       const poid = (F['purchaseOrderId'] || '').trim();
+      const famSig = /AMCFamilySafety|parentApproval/i.test(caller + '|' + scen + '|' + (F['cssOverride'] || '') + '|' + (F['parentHostName'] || ''));
 
-      const familyCaller = /^AMCFamilySafety/i.test(caller);
-      const familyCss = /AMCFamilySafety/i.test(cssOv);
-      const familyHost = /account\.microsoft\.com$/i.test(parentHost);
-      const familyScen = scen === 'parentApproval';
-
-      // 必须来自 account.microsoft.com，且是家庭组链路
-      if (!familyHost) {
-        log('[form] parentHostName=' + (parentHost || '空') + ' 不是 account.microsoft.com → 不替换');
-        return 0;
-      }
-      if (!(familyCaller || familyCss || familyScen)) {
-        log('[form] 无家庭组标识 caller=' + (caller || '空') +
-            ' cssOverride=' + (cssOv || '空') + ' scenario=' + (scen || '空') + ' → 不替换');
-        return 0;
-      }
+      // ---- 只认「主号批准后的付款页」，缺一个都别动 ----
+      if (!famSig) { log('[form] 非家庭组链路 → 不替换'); return 0; }
       if (!poid) {
-        log('[form] 家庭组链路但无 purchaseOrderId → 发起申请阶段，不替换');
-        warnOnce('form-no-poid', '这是「发起申请」阶段，不替换',
-          '等主号批准后到付款页才会换成内购');
+        log('[form] 无 purchaseOrderId → 发起申请阶段，不替换');
+        warnOnce('form-no-poid', '这是「发起申请」阶段', '等主号批准后到付款页才会换成内购');
         return 0;
       }
-      log('[form] ✅ 家庭组付款阶段 host=' + parentHost + ' poid=' + poid);
 
-      // 诊断：只打印一次，避免 1.5s 轮询刷屏
       const g = store.get(KEY_GAME), t = store.get(KEY_IAP);
       if (!g || !t || !t.productId || !t.availabilityId) return 0;
 
+      // 找 products 输入框
       let inp = null;
       for (let i = 0; i < form.elements.length; i++) {
         const el = form.elements[i];
@@ -1223,6 +1142,15 @@
       if (tgt) mk = tgt;
       let tt = t;
       if (mk) tt = alignAvail(t, mk);
+      // 付款页市场与内购 availabilityId 所属市场不一致 → 下单必报错，宁可不换
+      if (mk) {
+        var iapMk = marketOfAvail(tt.availabilityId) || normMarket(tt.market || '');
+        if (iapMk && iapMk !== normMarket(mk)) {
+          notify('⚠️ 付款页市场不符，已跳过替换', '页面 ' + mk + ' / 内购 ' + iapMk,
+            '请到 /' + (MARKET_LOCALE[iapMk] || iapMk.toLowerCase()) + '/ 重新加购内购');
+          return 0;
+        }
+      }
 
       let arr;
       try { arr = JSON.parse(inp.value); } catch (e) { return 0; }
@@ -1271,33 +1199,15 @@
     }, true);
   } catch (e) {}
 
-  // 兜底 3：定时巡检 —— 只做「状态观测」，绝不改写表单内容
-  // 改写一律留给 submit / requestSubmit / submit 事件，
-  // 否则用户还没点提交，页面上的商品就被换掉了
+  // 兜底 3：定时巡检 —— 主页面可能直接 .submit() 而不触发 submit 事件
+  // 同时处理「iframe 已存在但表单还没填好」的时序
   setInterval(function () {
     try {
       const forms = PAGE.document ? PAGE.document.querySelectorAll('form') : [];
-      for (let i = 0; i < forms.length; i++) {
-        const form = forms[i];
-        if (!form || !isBuynowAction(form.action)) continue;
-        const F = {};
-        for (let j = 0; j < form.elements.length; j++) {
-          const el = form.elements[j];
-          if (el && el.name) F[el.name] = String(el.value || '');
-        }
-        const poid = (F['purchaseOrderId'] || '').trim();
-        const scen = F['scenario'] || '';
-        const caller = F['callerApplicationId'] || '';
-        const isFamily = /^AMCFamilySafety/i.test(caller) || scen === 'parentApproval';
-        const sig = 'watch|' + poid + '|' + scen + '|' + (F['products'] || '').slice(0, 60);
-        if (patchBuynowForm._watchSig === sig) continue;
-        patchBuynowForm._watchSig = sig;
-        log('[watch] buynow 表单出现 scenario=' + (scen || '-') +
-            ' purchaseOrderId=' + (poid || '空') +
-            ' 阶段=' + (poid ? '主号付款(会替换)' : '发起申请(不替换)'));
-      }
+      for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
+  log('v4.5.3 injected (v4.1 core + gated payment-phase patch)');
 
   // ============================================================
   // 菜单
