@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.9.7
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.7：扣次强制可见 + 清空回读校验 + 面板跨标签同步）
+// @version      4.9.8
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.8：修存储删除双后端 + 移除自检脏数据 + 按订单号扣次）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -32,6 +32,10 @@
   // ============================================================
   const KEY_LICENSE = 'xfg_license';
   const KEY_GIFT    = 'xfg_giftId';
+
+  // 扣次去重状态（提到顶部，避免任何 TDZ 风险）
+  let giftConsumed = false;
+  let giftConsumedOrderId = '';
   const SERVER_BASE = 'https://xbox.aappe.uk';
 
   let licenseState = { valid: false, remaining: 0, checkedAt: 0, reason: '' };
@@ -121,19 +125,50 @@
   // ============================================================
   // 存储（GM_* 优先）
   // ============================================================
+  /**
+   * 双写双删存储
+   * ------------------------------------------------------------
+   * 旧实现有个致命 bug：del() 在 GM_deleteValue 存在时直接 return，
+   * 永远不会清 localStorage。只要历史上某一刻 GM 不可用、数据写进了
+   * localStorage（例如早期 @grant none 的版本），之后怎么删都删不掉，
+   * get() 又会回读到它 —— 表现就是「清空后 ① 还在」。
+   * 现在 get/set/del 三个动作对 GM 和 localStorage 同时生效。
+   */
   const store = {
+    _hasGM() { return typeof GM_setValue === 'function' && typeof GM_getValue === 'function'; },
+
     get(k) {
-      try { if (typeof GM_getValue === 'function') { const v = GM_getValue(k, ''); if (v) return JSON.parse(v); } } catch (e) {}
-      try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch (e) { return null; }
+      // GM 优先
+      if (this._hasGM()) {
+        try {
+          const v = GM_getValue(k, '');
+          if (v) {
+            try { return JSON.parse(v); } catch (e) { return v; }
+          }
+        } catch (e) {}
+      }
+      // 再读 localStorage（兼容历史遗留）
+      try {
+        const v = localStorage.getItem(k);
+        if (v) { try { return JSON.parse(v); } catch (e) { return v; } }
+      } catch (e) {}
+      return null;
     },
+
     set(k, obj) {
       const s = JSON.stringify(obj);
-      try { if (typeof GM_setValue === 'function') { GM_setValue(k, s); return; } } catch (e) {}
+      if (this._hasGM()) { try { GM_setValue(k, s); } catch (e) {} }
       try { localStorage.setItem(k, s); } catch (e) {}
     },
+
     del(k) {
-      try { if (typeof GM_deleteValue === 'function') { GM_deleteValue(k); return; } } catch (e) {}
+      // 两边都删，不再提前 return
+      if (this._hasGM() && typeof GM_deleteValue === 'function') {
+        try { GM_deleteValue(k); } catch (e) {}
+      }
       try { localStorage.removeItem(k); } catch (e) {}
+      // sessionStorage 也扫一遍，避免老版本残留在那
+      try { sessionStorage.removeItem(k); } catch (e) {}
     }
   };
 
@@ -203,7 +238,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.9.7</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.9.8</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -458,7 +493,37 @@
     planState = null;
     planPending = null;
     giftConsumed = false;
+    giftConsumedOrderId = '';
     logLines = [];
+
+    // 额外扫一遍：任何 xfg_ 前缀的遗留键全部清掉
+    // （只保留授权码，用户订阅凭证不能丢）
+    try {
+      var keep = { 'xfg_license': 1 };
+      var prefixes = ['xfg_'];
+      var scan = function (storage) {
+        if (!storage) return;
+        var ks = [];
+        for (var i = 0; i < storage.length; i++) {
+          var k = storage.key(i);
+          if (!k || keep[k]) continue;
+          for (var p = 0; p < prefixes.length; p++) {
+            if (k.indexOf(prefixes[p]) === 0) { ks.push(k); break; }
+          }
+        }
+        ks.forEach(function (k) { try { storage.removeItem(k); } catch (e) {} });
+      };
+      scan(window.localStorage);
+      scan(window.sessionStorage);
+      // GM 里也逐个删
+      if (store._hasGM && store._hasGM()) {
+        ['xfg_idsGame','xfg_idsIAP','xfg_locked','xfg_plan','xfg_giftId',
+         'xfg_orderQueue','xfg_approvedTime','approvedTime','xfg_targetMarket',
+         'xfg_iapMarket','xfg_lastMarket'].forEach(function (k) {
+          try { GM_deleteValue(k); } catch (e) {}
+        });
+      }
+    } catch (e) { log('[reset] 扫描清理异常', e); }
 
     // 回读验证：清空后必须真的读不到
     var g2 = store.get(KEY_GAME), t2 = store.get(KEY_IAP);
@@ -481,6 +546,9 @@
   var _lastSig = '';
   function panelSignature() {
     var g = store.get(KEY_GAME), t = store.get(KEY_IAP), lk = store.get(KEY_LOCK);
+    // 过滤历史自检写入的假 ID
+    if (g && /^TEST/i.test(String(g.productId || ''))) { store.del(KEY_GAME); g = null; }
+    if (t && /^TEST/i.test(String(t.productId || ''))) { store.del(KEY_IAP); t = null; }
     var pt = cachedPlan();
     return [
       (g && g.productId) || '', (t && t.productId) || '',
@@ -1111,8 +1179,7 @@
     } catch (e) {}
   }
 
-  // 一次赠礼只扣一次：同一 giftId 内只在首次成功替换时扣
-  let giftConsumed = false;
+  // 一次赠礼只扣一次（变量声明在文件顶部）
 
   // ---- 从订单/表单 body 里抠字段（诊断 + 队列用） ----
   function readOrderId(bodyStr) {
@@ -1285,13 +1352,25 @@
     return null;
   }
 
-  /** 同一次赠礼只扣一次 */
+  /**
+   * 同一次赠礼只扣一次。
+   * 「同一次」用 orderId 判定：换了订单号就是新一轮，应重新扣次。
+   */
   async function chargeOnce(t, g) {
-    if (giftConsumed) {
-      log('[charge] 本次赠礼已扣过，跳过');
+    var lo = null;
+    try { lo = latestOrder(); } catch (e) {}
+    var oid = (lo && lo.id) ? String(lo.id) : '';
+
+    if (giftConsumed && oid && giftConsumedOrderId && oid === giftConsumedOrderId) {
+      log('[charge] 订单 ' + oid.slice(0, 8) + ' 已扣过，跳过');
+      return;
+    }
+    if (giftConsumed && !oid) {
+      log('[charge] 本次赠礼已扣过（无 orderId），跳过');
       return;
     }
     giftConsumed = true;
+    giftConsumedOrderId = oid;
 
     var gid = currentGiftId();
     if (!gid) { gid = newGiftId(); }          // 付款页这条路径也要有幂等键
@@ -1310,6 +1389,7 @@
       log('[charge] 异常: ' + e.message);
       panelAdd('❌ 扣次异常: ' + e.message);
       giftConsumed = false;
+      giftConsumedOrderId = '';
       return;
     }
 
@@ -1327,6 +1407,7 @@
       panelAdd('❌ 扣次失败: ' + r.error);
       notify('扣次失败', r.error || '未知错误', '请检查授权码');
       giftConsumed = false;                    // 失败允许重试
+      giftConsumedOrderId = '';
     }
     refreshPanel();
   }
@@ -1798,7 +1879,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.9.7 injected (扣次可见 + 清空校验 + 同步)');
+  log('v4.9.8 injected (存储双删 + 订单级扣次)');
 
   // ============================================================
   // 菜单
@@ -1880,16 +1961,12 @@
           });
       });
       GM_registerMenuCommand("解除锁定", () => { store.del(KEY_LOCK); notify("已解除锁定", "可重新采集", ""); });
-      GM_registerMenuCommand("测试采集(自检)", () => {
-        handleCaptureItems([{ productId: "TESTPROD0001", availabilityId: "TESTAVAIL01", skuId: "0010" }]);
-        notify("自检完成", "若看到①②弹窗说明采集正常", "记得清空");
-      });
     }
   } catch (e) {}
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.9.7', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.9.8', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1911,5 +1988,5 @@
     return _origDel(k);
   };
 
-  log("v4.9.7 injected (licensed build)");
+  log("v4.9.8 injected (licensed build)");
 })();
