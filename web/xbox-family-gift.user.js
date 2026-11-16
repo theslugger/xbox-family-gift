@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.9.5
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.5：付款页自动补拉 plan + 存储诊断）
+// @version      4.9.6
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.6：替换成功扣次 + 全部清空彻底归零 + 刷新按钮）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -203,7 +203,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.9.5</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.9.6</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -219,6 +219,7 @@
         '</div>' +
         '<div style="margin-top:6px;display:flex;gap:6px">' +
           '<button id="xfg-lic" style="flex:1;padding:5px;background:#2a1a3a;color:#c8f;border:1px solid #536;border-radius:6px;cursor:pointer">授权</button>' +
+          '<button id="xfg-refresh" style="flex:0 0 60px;padding:5px;background:#1a2f3a;color:#9cf;border:1px solid #265;border-radius:6px;cursor:pointer">刷新</button>' +
           '<button id="xfg-clear" style="flex:1;padding:5px;background:#3a1a1a;color:#f99;border:1px solid #633;border-radius:6px;cursor:pointer">全部清空</button>' +
         '</div>' +
       '</div>';
@@ -234,9 +235,17 @@
       tg.textContent = open ? '展开' : '收起';
     });
     panelEl.querySelector('#xfg-clear').addEventListener('click', function () {
-      store.del(KEY_GAME); store.del(KEY_IAP); store.del(KEY_LOCK);
-      clearApproved(); store.del(KEY_ORDER_QUEUE); store.del(KEY_PLAN);
-      logLines = []; refreshPanel(); panelAdd('已清空 idsGame/idsIAP/approved/orderQueue/plan');
+      hardReset();
+    });
+
+    panelEl.querySelector('#xfg-refresh').addEventListener('click', function () {
+      // 从存储重新读一遍，再拉一次 plan，日志留痕
+      logLines = [];
+      planState = null;
+      panelAdd('已刷新 · 重新读取本地面板数据');
+      try { verifyLicense(); } catch (e) {}
+      if (grabState()) { try { fetchPlan(); } catch (e) {} }
+      refreshPanel();
     });
     panelEl.querySelector('#xfg-grab1').addEventListener('click', function () { grabTo('game'); });
     panelEl.querySelector('#xfg-grab2').addEventListener('click', function () { grabTo('iap'); });
@@ -405,6 +414,54 @@
         b2.style.borderColor = '#2a5';
       }
     }
+  }
+
+  /** 当前是否 ①② 都有 */
+  function grabState() {
+    var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+    return !!(g && g.productId && t && t.productId);
+  }
+
+  /**
+   * 全部清空：把面板上能看到的东西全部归零
+   *   KEY_GAME / KEY_IAP / KEY_LOCK / KEY_PLAN / KEY_GIFT
+   *   KEY_ORDER_QUEUE / KEY_APPROVED / KEY_APPROVED_TS
+   *   xfg_iapMarket / xfg_lastMarket / xfg_type_* / xfg_kind_*
+   *   cookie xfg_appr
+   * 授权码（KEY_LICENSE）保留，那是用户订阅的凭证。
+   */
+  function hardReset() {
+    store.del(KEY_GAME);
+    store.del(KEY_IAP);
+    store.del(KEY_LOCK);
+    store.del(KEY_PLAN);
+    try { clearGiftId(); } catch (e) {}
+    store.del(KEY_ORDER_QUEUE);
+    try { clearApproved(); } catch (e) {}
+    store.del('xfg_iapMarket');
+    store.del('xfg_lastMarket');
+    store.del(KEY_MARKET);
+
+    // 清掉按商品 ID 缓存的类型/类别键
+    try {
+      Object.keys(localStorage || {}).forEach(function (k) {
+        if (/^xfg_(type|kind)_/.test(k)) store.del(k);
+      });
+    } catch (e) {}
+    try {
+      for (var i = localStorage.length - 1; i >= 0; i--) {
+        var k2 = localStorage.key(i);
+        if (k2 && /^xfg_(type|kind)_/.test(k2)) localStorage.removeItem(k2);
+      }
+    } catch (e) {}
+
+    planState = null;
+    planPending = null;
+    giftConsumed = false;
+    logLines = [];
+
+    refreshPanel();
+    panelAdd('已全部清空 · 请重新获取①②');
   }
 
   function refreshPanel() {
@@ -1202,7 +1259,7 @@
     giftConsumed = true;
     const gid = currentGiftId();
     const r = await consumeLicense(gid, {
-      market: targetMarket() || '',
+      market: resolvePlanMarket(g, t) || '',
       iap: t ? t.productId : '',
       game: g ? g.productId : ''
     });
@@ -1378,6 +1435,7 @@
       return p;
     }).join('&');
     log('[hard] buynow 强制替换 → ' + tt.productId + '/' + tt.availabilityId + ' 字段:' + n);
+    try { chargeOnce(tt, store.get(KEY_GAME)); } catch (e) { log('chargeOnce err', e); }
     return out;
   }
 
@@ -1567,6 +1625,7 @@
       log('✅ buynow 表单已改写 · products=' + JSON.stringify(arr) + ' · market=' + (mk || '?'));
       panelAdd('✅ 付款页替换 ' + n + ' 项 → ' + tt.productId + '/' + tt.availabilityId);
       notify('✅ safety付款页已换内购', tt.productId + ' · sku ' + tt.skuId, 'market ' + (mk || '?'));
+      try { chargeOnce(tt, g); } catch (e) { log('chargeOnce err', e); }
       return n;
     } catch (e) { log('patchBuynowForm err', e); return 0; }
   }
@@ -1601,6 +1660,7 @@
       var out = s2.replace(/([?&]products=)[^&]*/, '$1' + encodeURIComponent(JSON.stringify(arr)));
       log('[hard] URL 改写 products → ' + tt.productId + '/' + tt.availabilityId + ' (' + n + ')');
       notify('✅ 付款 URL 已换内购', tt.productId, tt.availabilityId);
+      try { chargeOnce(tt, store.get(KEY_GAME)); } catch (e) { log('chargeOnce err', e); }
       return out;
     } catch (e) { log('rewriteBuynowUrl err', e); return u; }
   }
@@ -1677,7 +1737,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.9.5 injected (付款页自愈拉plan)');
+  log('v4.9.6 injected (扣次 + 清空 + 刷新)');
 
   // ============================================================
   // 菜单
@@ -1768,7 +1828,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.9.5', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.9.6', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1790,5 +1850,5 @@
     return _origDel(k);
   };
 
-  log("v4.9.5 injected (licensed build)");
+  log("v4.9.6 injected (licensed build)");
 })();
