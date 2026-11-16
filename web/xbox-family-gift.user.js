@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      5.0.2
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.0.2：补回订单队列函数 + 同一次付款只扣 1 次）
+// @version      5.1.0
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.0：扣次移到服务端，算plan即扣，客户端不再发扣次请求）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -355,7 +355,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v5.0.2</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v5.1.0</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -975,6 +975,16 @@
         }
         var e = { key: key, ops: o.j.ops || [], meta: o.j.meta || {}, sig: o.j.sig, ttl: o.j.ttl || 600, at: Date.now() };
         store.set(KEY_PLAN, e);
+
+        // 服务端算出 plan 时已经扣过次了：同步余额到面板
+        if (typeof o.j.remaining === 'number') {
+          licenseState.valid = true;
+          licenseState.remaining = o.j.remaining;
+          if (o.j.charged) {
+            panelAdd('💰 服务端已扣次，剩余 ' + o.j.remaining + ' 次');
+            refreshPanel();
+          }
+        }
         try { if (e.meta && e.meta.market) store.set('xfg_lastMarket', String(e.meta.market)); } catch (err) {}
         planState = e;
         log('[plan] 已下发 ' + e.ops.length + ' 条指令 · 内购档=' +
@@ -1461,7 +1471,6 @@
       const r = swapBuynowForm(bodyStr, g, t);
       if (r) {
         notify('✅ safety购买页已换内购', t.productId + ' · sku ' + t.skuId, '字段:' + r.n);
-        chargeOnce(t, g);
         return r.body;
       }
       return null;
@@ -1477,49 +1486,8 @@
    * 替换成功就扣次 —— 不做任何拦截。
    * 每次调用都会真的请求 /api/license/consume。
    */
-  async function chargeOnce(t, g) {
-    // ---- 会话锁：同一笔付款只扣一次 ----
-    var sKey = paySessionKey(t);
-    if (chargedThisSession(sKey)) {
-      log('[charge] 本笔付款已扣过（' + sKey + '），跳过重复替换的扣次');
-      return;
-    }
-
-    var gid = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-
-    var mk = resolvePlanMarket(g, t) || '';
-    var iapId = (t && t.productId) ? t.productId : '';
-    var gameId = (g && g.productId) ? g.productId : '';
-
-    var oid = '';
-    try { var lo = latestOrder(); if (lo && lo.id) oid = String(lo.id); } catch (e) {}
-
-    log('[charge] 扣次 giftId=' + gid + ' market=' + mk + ' iap=' + iapId + ' game=' + gameId +
-        ' orderId=' + (oid ? oid.slice(0, 8) : '无') + ' sessionKey=' + sKey);
-    panelAdd('⏳ 正在扣次…');
-
-    var r;
-    try {
-      r = await consumeLicense(gid, { market: mk, iap: iapId, game: gameId, orderId: oid });
-    } catch (e) {
-      log('[charge] 异常: ' + e.message);
-      panelAdd('❌ 扣次异常: ' + e.message);
-      return;
-    }
-
-    log('[charge] 返回 ok=' + r.ok + ' remaining=' + (r.remaining === undefined ? '?' : r.remaining) +
-        ' err=' + (r.error || ''));
-
-    if (r.ok) {
-      markChargedSession(sKey);   // 本笔付款已扣，后续巡检不再扣
-      panelAdd('💰 已扣 1 次，剩余 ' + r.remaining + ' 次');
-      notify('扣次成功', '剩余 ' + r.remaining + ' 次', '本笔付款不会重复扣');
-    } else {
-      panelAdd('❌ 扣次失败: ' + r.error);
-      notify('扣次失败', r.error || '未知错误', '');
-    }
-    refreshPanel();
-  }
+  /** 扣次已改到服务端 /api/plan：算出 plan 就扣，客户端不再发请求 */
+  function chargeOnce() { /* no-op */ }
 
   // 提示去重
   var warnedKeys = {};
@@ -1685,7 +1653,6 @@
       return p;
     }).join('&');
     log('[hard] buynow 强制替换 → ' + tt.productId + '/' + tt.availabilityId + ' 字段:' + n);
-    try { chargeOnce(tt, store.get(KEY_GAME)); } catch (e) { log('chargeOnce err', e); }
     return out;
   }
 
@@ -1875,7 +1842,6 @@
       log('✅ buynow 表单已改写 · products=' + JSON.stringify(arr) + ' · market=' + (mk || '?'));
       panelAdd('✅ 付款页替换 ' + n + ' 项 → ' + tt.productId + '/' + tt.availabilityId);
       notify('✅ safety付款页已换内购', tt.productId + ' · sku ' + tt.skuId, 'market ' + (mk || '?'));
-      try { chargeOnce(tt, g); } catch (e) { log('chargeOnce err', e); }
       return n;
     } catch (e) { log('patchBuynowForm err', e); return 0; }
   }
@@ -1910,7 +1876,6 @@
       var out = s2.replace(/([?&]products=)[^&]*/, '$1' + encodeURIComponent(JSON.stringify(arr)));
       log('[hard] URL 改写 products → ' + tt.productId + '/' + tt.availabilityId + ' (' + n + ')');
       notify('✅ 付款 URL 已换内购', tt.productId, tt.availabilityId);
-      try { chargeOnce(tt, store.get(KEY_GAME)); } catch (e) { log('chargeOnce err', e); }
       return out;
     } catch (e) { log('rewriteBuynowUrl err', e); return u; }
   }
@@ -2075,7 +2040,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v5.0.2', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v5.1.0', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -2097,5 +2062,5 @@
     return _origDel(k);
   };
 
-  log("v5.0.2 injected (licensed build)");
+  log("v5.1.0 injected (licensed build)");
 })();
