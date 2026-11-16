@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.9.3
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.3：修 plan 市场为空导致未就绪 + iframe 内不再重复显示面板）
+// @version      4.9.4
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.4：市场完全取自②内购页 + iframe 不重复显示面板）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -203,7 +203,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.9.3</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.9.4</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -312,8 +312,9 @@
       panelAdd('ℹ️ ' + (slot === 'game' ? '①' : '②') + ' 已经是 ' + pid);
       return true;
     }
-    // 抓取时把页面市场一起记下，后续 plan 就有依据，不会退到默认值
-    var pageMk = inferPageMarket() || manualMarket() || targetMarket() || '';
+    // 抓到 ID 时，把「当前页面所在市场」记进这个槽位。
+    // ② 的市场就是最终结算市场，后续 plan 全部按它来。
+    var pageMk = inferPageMarket() || manualMarket() || '';
     store.set(key, {
       productId: pid,
       availabilityId: (old && old.availabilityId) || '',
@@ -321,7 +322,9 @@
       market: pageMk,
       locale: ''
     });
-    if (pageMk) store.set('xfg_lastMarket', pageMk);
+    if (slot === 'iap' && pageMk) {
+      store.set('xfg_iapMarket', pageMk);   // ② 专属市场记录
+    }
     panelAdd('✅ 已获取' + (slot === 'game' ? '① 游戏' : '② 内购') + ': ' + pid);
     notify('✅ 已获取' + (slot === 'game' ? '① 游戏' : '② 内购'), pid, '来自当前页面 URL');
     // 两个都有就锁定并拉 plan
@@ -584,16 +587,31 @@
   /** 页面路径 / URL 参数里的市场，如 /es-ar/ → AR、?market=AR */
   function inferPageMarket() {
     try {
-      var m = (location.pathname || '').match(/\/([a-z]{2})-([a-z]{2})\//i);
+      // 1) 路径里的地区前缀 /es-ar/ /en-us/
+      var m = (location.pathname || '').match(/\/([a-z]{2})-([a-z]{2})(\/|$)/i);
       if (m) {
         var mk = normMarket(m[1].toUpperCase() + m[2].toUpperCase());
         if (mk) return mk;
       }
+      // 2) URL 参数 market=
       var q = (location.search || '').match(/[?&]market=([A-Za-z]{2,4})\b/);
       if (q) {
         var mk2 = normMarket(q[1]);
         if (mk2) return mk2;
       }
+      // 3) 路径末尾的两字母地区 /es-ar 已在 1) 覆盖；再兜 hreflang 等 meta
+      try {
+        var alt = document.querySelector('link[hreflang]');
+        if (alt) {
+          var hl = normMarket(alt.getAttribute('hreflang') || '');
+          if (hl) return hl;
+        }
+      } catch (e) {}
+      // 4) html lang 属性 zh-CN / es-AR
+      try {
+        var lang = normMarket(document.documentElement.lang || '');
+        if (lang) return lang;
+      } catch (e) {}
     } catch (e) {}
     return '';
   }
@@ -609,11 +627,11 @@
    * 只有拿到 plan 成功后才会把市场写回 KEY_MARKET。
    */
   function resolvePlanMarket(g, t) {
+    // 市场只认 ② 内购：用户在哪添加这个内购，就用哪个市场
     return normMarket((t && t.market) || '')
-        || normMarket((g && g.market) || '')
+        || normMarket(store.get('xfg_iapMarket') || '')
         || manualMarket()
         || inferPageMarket()
-        || normMarket(store.get('xfg_lastMarket') || '')
         || 'AR';
   }
 
@@ -1646,7 +1664,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.9.3 injected (plan市场兜底 + 面板单实例)');
+  log('v4.9.4 injected (市场取自② + 面板单实例)');
 
   // ============================================================
   // 菜单
@@ -1737,7 +1755,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.9.3', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.9.4', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1759,5 +1777,5 @@
     return _origDel(k);
   };
 
-  log("v4.9.3 injected (licensed build)");
+  log("v4.9.4 injected (licensed build)");
 })();
