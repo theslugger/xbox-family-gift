@@ -261,9 +261,9 @@
 
   // ============================================================
   // 【手动抓取】直接读当前页面 URL 里的 productId
-  //   https://www.xbox.com/es-ar/games/store/xxx/9P6LX2D15SD7
-  //   https://www.microsoft.com/es-ar/p/xxx/9PKVLFR97PKL
-  //   https://www.xbox.com/es-ar/p/9P6LX2D15SD7
+  //   /es-ar/games/store/<slug>/<12 位 productId>
+  //   /es-ar/p/<slug>/<12 位 productId>
+  //   /es-ar/p/<12 位 productId>
   // 用户点「获取①/获取②」时，把当前页的 ID 记到对应槽位。
   // ============================================================
   function pidFromUrl() {
