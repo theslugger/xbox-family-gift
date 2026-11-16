@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.5.6
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.5.6：商品类别校验，修①②放反导致的 FailedToHydrate）
+// @version      4.5.7
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.5.7：整条替换 + 收敛到可 Gift 档，修 FailedToHydrate-ProductNotFound）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -184,7 +184,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.5.6</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.5.7</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -495,25 +495,55 @@
     refreshPanel();
   }
 
+  // HAR 实证：buynowui 拿到 products[*] 后会逐字段去 DisplayCatalog 校验，
+  // 只要「productId / skuId / availabilityId」这一组不是同一个 SKU 的合法组合，
+  // 就落到 FailedToHydrate-ProductNotFound。所以必须整条替换，不能留原商品残值。
   function swapOne(obj, g, t) {
-    if (!(t.productId && t.availabilityId)) return 0;
-    if (obj.productId !== g.productId) return 0;
-    obj.productId = t.productId;
-    if (obj.availabilityId !== undefined) obj.availabilityId = t.availabilityId;
-    if (obj.skuId !== undefined && t.skuId) obj.skuId = t.skuId;
+    if (!obj || !t || !t.productId || !t.availabilityId) return 0;
+    if (String(obj.productId).toUpperCase() !== String(g.productId).toUpperCase()) return 0;
+    var keepQty = obj.quantity;
+    obj.productId = String(t.productId).toUpperCase();
+    obj.availabilityId = String(t.availabilityId).toUpperCase();
+    // skuId 跟着内购走；内购没有 sku 时才沿用原条目
+    if (t.skuId) obj.skuId = String(t.skuId);
+    if (keepQty !== undefined) obj.quantity = keepQty;
     return 1;
   }
+  // ============================================================
+  // parentApproval 的 buynow 只接受「可 Gift 的游戏」。
+  // DisplayCatalog 实测（AR）：
+  //   9PKVLFR97PKL / 0010 / B4R8C73NXW2H → Actions 含 Gift ✅
+  //   9PKVLFR97PKL / 0010 / B0N520SW1VC1 → Actions 含 Fulfill，无 Gift ❌
+  // 之前 HAR 里订单写的是 B0N520SW1VC1，buynow 拿它去建付款页就会 ProductNotFound
+  // ============================================================
+  var GIFT_AVAIL_BY_MARKET = {
+    '9PKVLFR97PKL': { 'AR': 'B4R8C73NXW2H', 'US': '9ZFDVNQ5H10H' }
+  };
+  function giftAvailFor(pid, mk) {
+    var m = GIFT_AVAIL_BY_MARKET[String(pid).toUpperCase()];
+    if (!m) return '';
+    return m[normMarket(mk)] || '';
+  }
+
   // availabilityId 是按市场分配的；同一 productId+skuId 在不同市场有不同 availabilityId
   var AVAIL_BY_MARKET = {
     '9P6LX2D15SD7': {
       'US': '9XPHQG4220WG',
       'AR': 'B2XRTR8KPHPM',
       'JP': '9XJRWRN87FRX'
+    },
+    // 游戏 9PKVLFR97PKL（Neon Apex: Beyond the Limit）
+    // AR: 两个都带 Purchase，B4R8C73NXW2H 额外带 Gift
+    '9PKVLFR97PKL': {
+      'AR': 'B4R8C73NXW2H',
+      'US': '9ZFDVNQ5H10H'
     }
   };
   var AVAIL_MARKET = {
     'B2XRTR8KPHPM': 'AR', 'B26TLGNG62BG': 'AR',
+    'B4R8C73NXW2H': 'AR', 'B0N520SW1VC1': 'AR',
     '9XPHQG4220WG': 'US', '9N3TNRFCDFGJ': 'US',
+    '9ZFDVNQ5H10H': 'US',
     '9XJRWRN87FRX': 'JP', '9V7LMZ5BPBXJ': 'JP'
   };
   function marketOfAvail(aid) { return AVAIL_MARKET[String(aid).toUpperCase()] || ''; }
@@ -588,7 +618,7 @@
     if (!mk) return t;
     var m = AVAIL_BY_MARKET[String(t.productId).toUpperCase()];
     if (!m) return t;
-    var want = m[mk];
+    var want = giftAvailFor(t.productId, mk) || m[mk];
     if (!want || want === t.availabilityId) return t;
     var out = { productId: t.productId, availabilityId: want, skuId: t.skuId, market: mk };
     log('availabilityId 按市场归一: ' + t.availabilityId + ' -> ' + want + ' (' + mk + ')');
@@ -714,9 +744,15 @@
       log('[buynow] kind 放反: ①=' + ko.kg + ' ②=' + ko.kt + ' → 跳过');
       return null;
     }
-    // HAR 教训：内购 availabilityId B0N520SW1VC1 不属于 AR（也查不到归属），
-    // 换上去 buynow 直接 FailedToHydrate-ProductNotFound。宁可不动，也别换脏 ID。
+    // HAR 教训：buynow 用 products[*] 去 DisplayCatalog 校验，
+    //   B0N520SW1VC1（Fulfill，无 Gift）当 parentApproval 商品 → FailedToHydrate-ProductNotFound
+    // 所以这里强制把内购 availabilityId 收敛成「该市场可 Gift 的那一条」。
     if (formMarket) {
+      var wantGift = giftAvailFor(tt.productId, formMarket);
+      if (wantGift && wantGift !== String(tt.availabilityId).toUpperCase()) {
+        log('[buynow] 内购 availabilityId ' + tt.availabilityId + ' → ' + wantGift + '（' + formMarket + ' 可 Gift 档）');
+        tt = { productId: tt.productId, availabilityId: wantGift, skuId: tt.skuId || '0010', market: formMarket };
+      }
       var iapMk = marketOfAvail(tt.availabilityId) || normMarket(tt.market || '');
       if (iapMk && normMarket(formMarket) && iapMk !== normMarket(formMarket)) {
         notify('⚠️ 内购 ID 与付款市场不符，已跳过替换',
@@ -768,10 +804,14 @@
         var pr = (av.OrderManagementData || {}).Price || {};
         var list = Number(pr.ListPrice);
         if (!isFinite(list)) list = 0;
-        // 只要非零价；多个非零时取第一个（通常就是标准档）
-        if (list > 0 && !best) {
-          best = { availabilityId: aid, price: list, currency: pr.CurrencyCode || '', skuId: sku };
-        }
+        if (list <= 0) return;
+        var acts = Array.isArray(av.Actions) ? av.Actions : [];
+        var canGift = acts.some(function (a) { return /^gift$/i.test(String(a)); });
+        var canBuy = acts.some(function (a) { return /^(purchase|fulfill)$/i.test(String(a)); });
+        var got = { availabilityId: aid, price: list, currency: pr.CurrencyCode || '', skuId: sku, gift: canGift, buy: canBuy };
+        // 家庭组送礼链路优先用可 Gift 的那一条
+        if (!best) best = got;
+        else if (canGift && !best.gift) best = got;
       });
     });
     // 全是 0 价时退而取第一个有 id 的，至少结构完整
@@ -954,7 +994,8 @@
             ' parentHost=' + (dd['parentHostName'] || '-') +
             ' poid=' + (dd['purchaseOrderId'] || '-') +
             ' market=' + (dd['market'] || '-') +
-            ' 首项=' + ((p0[0] && p0[0].productId) || '?') + '/' + ((p0[0] && p0[0].availabilityId) || '?'));
+            ' 首项=' + ((p0[0] && p0[0].productId) || '?') + '/' + ((p0[0] && p0[0].availabilityId) || '?') +
+            ' 内购=' + ((store.get(KEY_IAP) || {}).productId || '?') + '/' + ((store.get(KEY_IAP) || {}).availabilityId || '?'));
       } catch (e) {}
 
       // 必须是家庭组批准链路
@@ -1225,6 +1266,10 @@
       if (tgt) mk = tgt;
       let tt = t;
       if (mk) tt = alignAvail(t, mk);
+      if (mk) {
+        var wantGift2 = giftAvailFor(t.productId, mk);
+        if (wantGift2) tt = { productId: t.productId, availabilityId: wantGift2, skuId: (tt.skuId || t.skuId || '0010'), market: mk };
+      }
       // 付款页市场与内购 availabilityId 所属市场不一致 → 下单必报错，宁可不换
       if (mk) {
         var iapMk = marketOfAvail(tt.availabilityId) || normMarket(tt.market || '');
@@ -1290,7 +1335,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.5.6 injected (orders 永不替换 + buynow 单点替换 + 商品类别校验)');
+  log('v4.5.7 injected (整条替换 + Gift 档收敛 + orders 永不替换)');
 
   // ============================================================
   // 菜单
@@ -1369,7 +1414,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.5.6', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.5.7', 'color:#107C10;font-weight:700',
       '| orders 分支已禁替换 | 唯一替换点=buynow 表单');
   } catch (e) {}
 
@@ -1391,5 +1436,5 @@
     return _origDel(k);
   };
 
-  log("v4.0 injected (licensed build)");
+  log("v4.5.7 injected (licensed build)");
 })();
