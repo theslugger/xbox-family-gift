@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      5.0.0
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.0.0：扣次去重交给服务端按订单号判定，客户端无法绕过）
+// @version      5.0.1
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.0.1：每次替换成功扣 1 次，服务端不去重）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -87,7 +87,7 @@
       if (!j.ok) return { ok: false, error: j.error || '扣次失败', reason: j.reason };
       licenseState.valid = true;
       licenseState.remaining = j.data.remaining;
-      return { ok: true, remaining: j.data.remaining, dedup: !!j.data.dedup };
+      return { ok: true, remaining: j.data.remaining };
     } catch (e) {
       return { ok: false, error: '无法连接授权服务: ' + e.message };
     }
@@ -236,7 +236,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v5.0.0</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v5.0.1</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -1354,13 +1354,10 @@
    * 每次调用都会真的请求 /api/license/consume。
    */
   // ============================================================
-  // 扣次（服务端权威去重）
+  // 扣次：每次替换成功 → 请求一次服务端 → 扣 1 次
   // ------------------------------------------------------------
-  // 是否重复扣次完全由服务端判定：
-  //   键 = 授权码哈希 + 订单号 + 商品组合 + 市场
-  //   · 同一订单在 2 小时窗口内只扣 1 次（付款页反复巡检不会连扣）
-  //   · 换新订单才再扣
-  //   · 客户端伪造 giftId 无效，放行判断不看客户端字段
+  // 服务端不做去重，来一次扣一次。
+  // 不替换就不扣（不发请求）；替换几次就扣几次。
   // ============================================================
   async function chargeOnce(t, g) {
     var gid = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -1390,12 +1387,8 @@
         ' err=' + (r.error || ''));
 
     if (r.ok) {
-      if (r.dedup) {
-        panelAdd('ℹ️ 同一订单已扣过，剩余 ' + r.remaining + ' 次');
-      } else {
-        panelAdd('💰 已扣 1 次，剩余 ' + r.remaining + ' 次');
-        notify('扣次成功', '剩余 ' + r.remaining + ' 次', '');
-      }
+      panelAdd('💰 已扣 1 次，剩余 ' + r.remaining + ' 次');
+      notify('扣次成功', '剩余 ' + r.remaining + ' 次', '');
     } else {
       panelAdd('❌ 扣次失败: ' + r.error);
       notify('扣次失败', r.error || '未知错误', '');
@@ -1870,7 +1863,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v5.0.0 injected (服务端权威扣次)');
+  log('v5.0.1 injected (替换成功即扣1次)');
 
   // ============================================================
   // 菜单
@@ -1957,7 +1950,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v5.0.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v5.0.1', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1979,5 +1972,5 @@
     return _origDel(k);
   };
 
-  log("v5.0.0 injected (licensed build)");
+  log("v5.0.1 injected (licensed build)");
 })();
