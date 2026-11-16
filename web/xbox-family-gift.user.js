@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      5.0.1
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.0.1：每次替换成功扣 1 次，服务端不去重）
+// @version      5.0.2
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.0.2：补回订单队列函数 + 同一次付款只扣 1 次）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -32,6 +32,9 @@
   // ============================================================
   const KEY_LICENSE = 'xfg_license';
   const KEY_GIFT    = 'xfg_giftId';
+
+  // ---- 扣次会话锁（提前声明，避免 TDZ）----
+
 
   const SERVER_BASE = 'https://xbox.aappe.uk';
 
@@ -171,6 +174,122 @@
   };
 
   // ============================================================
+  // 扣次：一次付款页会话只扣 1 次
+  // ------------------------------------------------------------
+  // 付款页每 1.5 秒巡检一次，同一次付款会反复替换 4~8 次。
+  // 这些都属于「同一次购买」，只能算 1 次。
+  //
+  // 判据（任一变化才算新一轮）：
+  //   · orderId 变了
+  //   · 目标商品变了
+  //   · 页面重新加载（sessionStorage 被清）
+  //   · 用户点了「全部清空」或「刷新」的强制重置
+  //
+  // 服务端不做去重，来一次扣一次；防重复完全靠这里的会话锁。
+  // ============================================================
+  /**
+   * 替换成功就扣次 —— 不做任何拦截。
+   * 每次调用都会真的请求 /api/license/consume。
+   */
+  // ============================================================
+  // 扣次：一次付款页会话只扣 1 次
+  // ------------------------------------------------------------
+  // 付款页每 1.5 秒巡检一次，同一次付款会反复替换 4~8 次。
+  // 这些都属于「同一次购买」，只能算 1 次。
+  //
+  // 判据（任一变化才算新一轮）：
+  //   · orderId 变了
+  //   · 目标商品变了
+  //   · 页面重新加载（sessionStorage 被清）
+  //   · 用户点了「全部清空」或「刷新」的强制重置
+  //
+  // 服务端不做去重，来一次扣一次；防重复完全靠这里的会话锁。
+  // ============================================================
+  /**
+   * 替换成功就扣次 —— 不做任何拦截。
+   * 每次调用都会真的请求 /api/license/consume。
+   */
+  // ============================================================
+  // 扣次：一次付款页会话只扣 1 次
+  // ------------------------------------------------------------
+  // 付款页每 1.5 秒巡检一次，同一次付款会反复替换 4~8 次。
+  // 这些都属于「同一次购买」，只能算 1 次。
+  //
+  // 判据（任一变化才算新一轮）：
+  //   · orderId 变了
+  //   · 目标商品变了
+  //   · 页面重新加载（sessionStorage 被清）
+  //   · 用户点了「全部清空」或「刷新」的强制重置
+  //
+  // 服务端不做去重，来一次扣一次；防重复完全靠这里的会话锁。
+  // ============================================================
+  /**
+   * 替换成功就扣次 —— 不做任何拦截。
+   * 每次调用都会真的请求 /api/license/consume。
+   */
+  // ============================================================
+  // 扣次：一次付款页会话只扣 1 次
+  // ------------------------------------------------------------
+  // 付款页每 1.5 秒巡检一次，同一次付款会反复替换 4~8 次。
+  // 这些都属于「同一次购买」，只能算 1 次。
+  //
+  // 判据（任一变化才算新一轮）：
+  //   · orderId 变了
+  //   · 目标商品变了
+  //   · 页面重新加载（sessionStorage 被清）
+  //   · 用户点了「全部清空」或「刷新」的强制重置
+  //
+  // 服务端不做去重，来一次扣一次；防重复完全靠这里的会话锁。
+  // ============================================================
+  // ---- 订单队列（4.6.2 移植时丢失，补回）----
+  const KEY_ORDER_QUEUE = 'xfg_orderQueue';
+
+  /** 压入一条订单记录（去重，最多保留 20 条） */
+  function pushOrder(id, productId, skuId, market) {
+    if (!id) return;
+    var q = store.get(KEY_ORDER_QUEUE);
+    if (!Array.isArray(q)) q = [];
+    for (var i = 0; i < q.length; i++) {
+      if (q[i] && q[i].id === id) {
+        q[i].at = Date.now();
+        store.set(KEY_ORDER_QUEUE, q);
+        return;
+      }
+    }
+    q.push({ id: String(id), productId: productId || '', skuId: skuId || '', market: market || '', at: Date.now() });
+    if (q.length > 20) q = q.slice(-20);
+    store.set(KEY_ORDER_QUEUE, q);
+  }
+
+  /** 最近一条订单 */
+  function latestOrder() {
+    var q = store.get(KEY_ORDER_QUEUE);
+    if (!Array.isArray(q) || !q.length) return null;
+    return q[q.length - 1] || null;
+  }
+
+  var KEY_CHARGED_SESSION = 'xfg_chargedSession';
+
+  /** 本次付款会话的唯一键 */
+  function paySessionKey(t) {
+    var oid = '';
+    try { var lo = latestOrder(); if (lo && lo.id) oid = String(lo.id); } catch (e) {}
+    var pid = (t && t.productId) ? String(t.productId).toUpperCase() : '';
+    return oid + '|' + pid;
+  }
+
+  /** 本会话是否已扣过 */
+  function chargedThisSession(key) {
+    try { return sessionStorage.getItem(KEY_CHARGED_SESSION) === key; } catch (e) { return false; }
+  }
+  function markChargedSession(key) {
+    try { sessionStorage.setItem(KEY_CHARGED_SESSION, key); } catch (e) {}
+  }
+  function clearChargedSession() {
+    try { sessionStorage.removeItem(KEY_CHARGED_SESSION); } catch (e) {}
+  }
+
+  // ============================================================
   // 通知
   // ============================================================
   function notify(title, sub, body) {
@@ -236,7 +355,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v5.0.1</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v5.0.2</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -275,6 +394,7 @@
       // 从存储重新读一遍，再拉一次 plan，日志留痕
       logLines = [];
       planState = null;
+      clearChargedSession();
       panelAdd('已刷新 · 重新读取本地面板数据');
       try { verifyLicense(); } catch (e) {}
       if (grabState()) { try { fetchPlan(); } catch (e) {} }
@@ -490,6 +610,7 @@
 
     planState = null;
     planPending = null;
+    clearChargedSession();
     logLines = [];
 
     // 额外扫一遍：任何 xfg_ 前缀的遗留键全部清掉
@@ -994,6 +1115,9 @@
   // 把 availabilityId 归一到目标市场，避免跨市场 404
   // 4.7.0：市场对齐由服务端补齐，本地原样返回
   function alignAvail(t, orderMarket) { return t; }
+  /** 兼容占位：4.7+ 不再在本地判断 Gift 档，由服务端负责 */
+  function giftAvailFor() { return ''; }
+
   function _alignAvailLegacy(t, orderMarket) {
     if (!t || !t.productId) return t;
     var mk = normMarket(orderMarket);
@@ -1353,25 +1477,25 @@
    * 替换成功就扣次 —— 不做任何拦截。
    * 每次调用都会真的请求 /api/license/consume。
    */
-  // ============================================================
-  // 扣次：每次替换成功 → 请求一次服务端 → 扣 1 次
-  // ------------------------------------------------------------
-  // 服务端不做去重，来一次扣一次。
-  // 不替换就不扣（不发请求）；替换几次就扣几次。
-  // ============================================================
   async function chargeOnce(t, g) {
+    // ---- 会话锁：同一笔付款只扣一次 ----
+    var sKey = paySessionKey(t);
+    if (chargedThisSession(sKey)) {
+      log('[charge] 本笔付款已扣过（' + sKey + '），跳过重复替换的扣次');
+      return;
+    }
+
     var gid = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
     var mk = resolvePlanMarket(g, t) || '';
     var iapId = (t && t.productId) ? t.productId : '';
     var gameId = (g && g.productId) ? g.productId : '';
 
-    // 当前订单号：服务端用它做权威去重
     var oid = '';
     try { var lo = latestOrder(); if (lo && lo.id) oid = String(lo.id); } catch (e) {}
 
     log('[charge] 扣次 giftId=' + gid + ' market=' + mk + ' iap=' + iapId + ' game=' + gameId +
-        ' orderId=' + (oid ? oid.slice(0, 8) : '无'));
+        ' orderId=' + (oid ? oid.slice(0, 8) : '无') + ' sessionKey=' + sKey);
     panelAdd('⏳ 正在扣次…');
 
     var r;
@@ -1387,8 +1511,9 @@
         ' err=' + (r.error || ''));
 
     if (r.ok) {
+      markChargedSession(sKey);   // 本笔付款已扣，后续巡检不再扣
       panelAdd('💰 已扣 1 次，剩余 ' + r.remaining + ' 次');
-      notify('扣次成功', '剩余 ' + r.remaining + ' 次', '');
+      notify('扣次成功', '剩余 ' + r.remaining + ' 次', '本笔付款不会重复扣');
     } else {
       panelAdd('❌ 扣次失败: ' + r.error);
       notify('扣次失败', r.error || '未知错误', '');
@@ -1863,7 +1988,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v5.0.1 injected (替换成功即扣1次)');
+  log('v5.0.2 injected (订单队列 + 会话锁扣次)');
 
   // ============================================================
   // 菜单
@@ -1950,7 +2075,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v5.0.1', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v5.0.2', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1972,5 +2097,5 @@
     return _origDel(k);
   };
 
-  log("v5.0.1 injected (licensed build)");
+  log("v5.0.2 injected (licensed build)");
 })();
