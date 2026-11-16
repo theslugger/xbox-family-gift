@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.5.7
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.5.7：整条替换 + 收敛到可 Gift 档，修 FailedToHydrate-ProductNotFound）
+// @version      4.6.0
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.6.0：对齐手机端 sgmodule v8 的 approved 判据，orders/buynow 一致换内购）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -184,7 +184,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.5.7</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.6.0</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -217,7 +217,8 @@
     panelEl.querySelector('#xfg-refresh').addEventListener('click', refreshPanel);
     panelEl.querySelector('#xfg-clear').addEventListener('click', function () {
       store.del(KEY_GAME); store.del(KEY_IAP); store.del(KEY_LOCK);
-      logLines = []; refreshPanel(); panelAdd('已清空 idsGame/idsIAP');
+      clearApproved(); store.del(KEY_ORDER_QUEUE);
+      logLines = []; refreshPanel(); panelAdd('已清空 idsGame/idsIAP/approved/orderQueue');
     });
     panelEl.querySelector('#xfg-test').addEventListener('click', function () {
       handleCaptureItems([{ productId: 'TESTPROD0001', availabilityId: 'TESTAVAIL01', skuId: '0010' }]);
@@ -345,7 +346,8 @@
     st.innerHTML =
       '<div>① 游戏: <b style="color:#7fd">' + (g ? g.productId + '<br><span style="color:#888">avail ' + g.availabilityId + ' sku ' + g.skuId + (g.market ? ' · market ' + g.market : '') + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
       '<div style="margin-top:4px">② 内购: <b style="color:#7fd">' + (t ? t.productId + '<br><span style="color:#888">avail ' + t.availabilityId + ' sku ' + t.skuId + (t.market ? ' · market ' + t.market : '') + '</span>' : '<span style="color:#f77">未采集</span>') + '</b></div>' +
-      '<div style="margin-top:4px">状态: ' + (lk ? '<b style="color:#ff0">🔒 已锁定</b>' : '<span style="color:#888">采集中</span>') + '</div>' +
+      '<div style="margin-top:4px">状态: ' + (lk ? '<b style="color:#ff0">🔒 已锁定</b>' : '<span style="color:#888">采集中</span>') +
+        (isApproved() ? ' <b style="color:#7fd">· 已批准✅</b>' : ' <span style="color:#888">· 待批准</span>') + '</div>' +
       (function () {
         var lic = getLicense();
         if (!lic) return '<div style="margin-top:2px;color:#f77">授权: <b>未激活</b> — 点「授权」输入</div>';
@@ -929,11 +931,101 @@
     return false;
   }
 
+  // ============================================================
+  // 批准标记（对照手机端稳定的 approve_flag.js）：
+  //   手机端之所以稳，是因为它把「主号已批准」当成一个明确状态：
+  //     钩 account.microsoft.com/family/api/buy/requests/approve → 写 approvedTime
+  //     swap_payment 只在 approvedTime 存在时才换 orders
+  //   网页端原来用「buynow 表单里有 purchaseOrderId」当判据，
+  //   但 HAR 里 4.5.4 起 orders 一律不换，等于把手机端的关键动作丢了。
+  //   这里恢复同样语义：approve 一落地就打标记，orders/buynow 都看它。
+  // ============================================================
+  const KEY_APPROVED = 'xfg_approvedTime';
+  // ============================================================
+  // 跨标签同步队列（网页端必须补的东西）
+  // ------------------------------------------------------------
+  // 手机端是整机 MITM，全局一份存储；网页端不行：
+  //   · 订单 POST /users/me/orders 发生在 account.microsoft.com 标签
+  //   · buynow iframe POST 发生在 www.microsoft.com 标签
+  //   · 脚本 @run-at document-start，orderId 很可能还没写进本案就切页面了
+  // 所以在 orders 里就把 orderId 投进队列，任何同源标签（含 www）都能读到。
+  // ============================================================
+  const KEY_ORDER_QUEUE = 'xfg_orderQueue';
+  function pushOrder(orderId, productId, skuId, market) {
+    if (!orderId) return;
+    var q = store.get(KEY_ORDER_QUEUE); if (!Array.isArray(q)) q = [];
+    q = q.filter(function (x) { return x && x.id !== orderId; });
+    q.push({ id: String(orderId), productId: productId || '', skuId: skuId || '', market: market || '', at: Date.now() });
+    if (q.length > 20) q = q.slice(-20);
+    store.set(KEY_ORDER_QUEUE, q);
+    log('[queue] 记录 orderId ' + orderId + ' product=' + productId);
+  }
+  function latestOrder() {
+    var q = store.get(KEY_ORDER_QUEUE);
+    if (!Array.isArray(q) || !q.length) return null;
+    var now = Date.now();
+    var live = q.filter(function (x) { return x && x.id && (now - (x.at || 0)) < 60 * 60 * 1000; });
+    return live.length ? live[live.length - 1] : null;
+  }
+
+  function markApproved() { store.set(KEY_APPROVED, Date.now()); }
+  function approvedAt() { var v = store.get(KEY_APPROVED); return Number(v) || 0; }
+  function isApproved() { var t = approvedAt(); return !!t && (Date.now() - t) < 30 * 60 * 1000; }
+  function clearApproved() { store.del(KEY_APPROVED); }
+
   // 一次赠礼只扣一次：同一 giftId 内只在首次成功替换时扣
   let giftConsumed = false;
 
+  // ---- 从订单/表单 body 里抠字段（诊断 + 队列用） ----
+  function readOrderId(bodyStr) {
+    try { var o = JSON.parse(bodyStr); return (o && o.orderId) ? String(o.orderId) : ''; } catch (e) {}
+    var m = String(bodyStr).match(/["']?orderId["']?\s*[:=]\s*["']?([0-9a-fA-F-]{20,})/);
+    return m ? m[1] : '';
+  }
+  function readFirstProductId(bodyStr) {
+    try {
+      var o = JSON.parse(bodyStr);
+      var it = o && o.items && o.items[0];
+      return (it && it.productId) ? String(it.productId) : '';
+    } catch (e) {}
+    var m = String(bodyStr).match(/"productId"\s*:\s*"([^"]+)"/);
+    return m ? m[1] : '';
+  }
+  function readFirstSkuId(bodyStr) {
+    try {
+      var o = JSON.parse(bodyStr);
+      var it = o && o.items && o.items[0];
+      return (it && it.skuId) ? String(it.skuId) : '';
+    } catch (e) {}
+    var m = String(bodyStr).match(/"skuId"\s*:\s*"([^"]+)"/);
+    return m ? m[1] : '';
+  }
+  function readMarket(bodyStr) {
+    try {
+      var o = JSON.parse(bodyStr);
+      if (o && o.market) return normMarket(o.market);
+    } catch (e) {}
+    var m = String(bodyStr).match(/"market"\s*:\s*"([^"]+)"/);
+    return m ? normMarket(m[1]) : '';
+  }
+
   function maybeSwap(url, bodyStr) {
     if (typeof bodyStr !== 'string' || !bodyStr) return null;
+
+    // ---- 0) 主号批准 → 打标记（对照 approve_flag.js）----
+    // 这一步不换任何字段，只把「已进入最终付款阶段」这个状态记下来，
+    // 供 orders / buynow 判断。没有它，网页端就无法区分
+    // 「子号发起申请」和「主号已批准」两个完全不同的阶段。
+    if (RE_APPROVE.test(url)) {
+      var apid = readOrderId(bodyStr);
+      var appid = readFirstProductId(bodyStr);
+      markApproved();
+      if (apid) pushOrder(apid, appid, readFirstSkuId(bodyStr), readMarket(bodyStr));
+      log('[approve] 已批准 orderId=' + (apid || '?') + ' productId=' + (appid || '?') + ' → approvedTime 已写入');
+      notify('✅ 已批准', '进入最终付款阶段', 'orders / buynow 将一致换成内购');
+      return null;
+    }
+
     const g = store.get(KEY_GAME), t = store.get(KEY_IAP);
     if (!g || !t) return null;
     if (!t.availabilityId) { log('内购缺 availabilityId，跳过替换防404'); return null; }
@@ -963,19 +1055,34 @@
     // ============================================================
     if (/purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders/.test(url)) {
       // ============================================================
-      // HAR 实证（2026-11-16T03:50:03.599Z，POST /v7.0/users/me/orders → 201）：
-      //   body = {"market":"AR","language":"es-AR","items":[
-      //     {"productId":"9PKVLFR97PKL","availabilityId":"B0N520SW1VC1","skuId":"0010",
-      //      "beneficiary":{"identityType":"Msa","identityValue":"<子号 puid>"}}]}
-      //   订单被换成【内购】→ approve 也跟着内购 →
-      //   buynow 收到 products=[游戏 9P6LX2D15SD7 / AR availabilityId B2XRTR8KPHPM]
-      //   与订单商品不一致 → 目录解析失败 → FailedToHydrate-ProductNotFound（付款页报错）。
+      // 对照手机端稳定版 swap_payment.js 的 orders 分支：
+      //   「主号已批准（approved=1）就换订单商品」，并不是一律不换。
       //
-      // 结论：orders 阶段【永远不换】。这里是子号发起申请 / 主号批准建单，
-      // 一旦换掉就破坏 buynow 的商品一致性。唯一改写点 = buynow 表单。
+      // 之前 4.5.4 起把这里改成硬 no-op，理由是 HAR 里订单是内购、
+      // buynow 是游戏、两边不一致 → ProductNotFound。但真正不一致的是
+      // availabilityId（B0N520SW1VC1 无 Gift），不是「该不该换」。
+      // 现在 availabilityId 已收敛到可 Gift 档，就按手机端语义恢复：
+      //   已批准 → 换；未批准（子号发起申请阶段）→ 不换。
       // ============================================================
-      log('[orders] 建单/批准阶段：一律保持原样，不替换');
-      return null;
+      log('[orders] 建单阶段 orderId=' + readOrderId(bodyStr) +
+          ' approved=' + (isApproved() ? 'YES' : 'NO'));
+      var qid = readOrderId(bodyStr);
+      var qpid = readFirstProductId(bodyStr);
+      var qsku = readFirstSkuId(bodyStr);
+      var qmk = readMarket(bodyStr);
+      if (qid) pushOrder(qid, qpid, qsku, qmk);
+      if (!isApproved()) {
+        log('[orders] 未批准（子号发起申请 / 审批页展示）→ 保持原样');
+        return null;
+      }
+      var ro = swapOrdersJson(bodyStr, g, t);
+      if (ro) {
+        notify('✅ 订单商品已换内购', t.productId + ' · sku ' + t.skuId, '字段:' + ro.n);
+        log('[orders] 已换内购', ro.n);
+      } else {
+        log('[orders] 已批准但替换未命中（商品不匹配），保持原样');
+      }
+      return ro ? ro.body : null;
     }
     if (/www\.microsoft\.com\/store\/purchase\/buynowui\/buynow/.test(url)) {
       // ---- 诊断：HAR 里这条链路的真实参数 ----
@@ -1004,9 +1111,24 @@
         log('buynow：非家庭组链路，不替换');
         return null;
       }
-      // 必须有 purchaseOrderId = 主号批准后的付款页（HAR 实测：39bfe4f4-…）
-      if (!/purchaseOrderId=[^&]+/i.test(bodyStr)) {
-        log('buynow：无 purchaseOrderId → 发起申请阶段，不替换');
+      // buynow 必须有 purchaseOrderId 才是「已建单 → 付款页」
+      var hasPoid = /purchaseOrderId=[^&]+/i.test(bodyStr);
+      var lastOrder = latestOrder();
+      if (!hasPoid) {
+        // 网页端 orderId 通常已经在 account 标签的 orders 响应里拿到了，
+        // 但 buynow 表单自带的那份这里读不到 → 直接补进表单
+        if (lastOrder && lastOrder.id) {
+          var patchedIn = bodyStr + '&purchaseOrderId=' + encodeURIComponent(lastOrder.id);
+          log('[buynow] 表单缺 purchaseOrderId，用队列 orderId=' + lastOrder.id + ' 补上');
+          bodyStr = patchedIn;
+          hasPoid = true;
+        } else {
+          log('buynow：无 purchaseOrderId 且队列为空 → 发起申请阶段，不替换');
+          return null;
+        }
+      }
+      if (!isApproved()) {
+        log('[buynow] 尚未收到 approve 标记 → 保守不替换');
         return null;
       }
       const r = swapBuynowForm(bodyStr, g, t);
@@ -1051,7 +1173,8 @@
   // 统一请求处理：支持 fetch(Request) / 字符串 body / 非字符串
   // ============================================================
   const RE_CAPTURE = /cart\.production\.store-web\.dynamics\.com\/.*\/cart\/(loadCart|addItems|add)/;
-  const RE_SWAP = /(purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders|www\.microsoft\.com\/store\/purchase\/buynowui\/buynow)/;
+  const RE_APPROVE = /account\.microsoft\.com\/family\/api\/buy\/requests\/approve/;
+  const RE_SWAP = /(purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders|www\.microsoft\.com\/store\/purchase\/buynowui\/buynow|account\.microsoft\.com\/family\/api\/buy\/requests\/approve)/;
 
   // 从 Request 对象读 body（克隆避免消费原请求）
   function readRequestBody(input) {
@@ -1240,8 +1363,22 @@
       // ---- 只认「主号批准后的付款页」，缺一个都别动 ----
       if (!famSig) { log('[form] 非家庭组链路 → 不替换'); return 0; }
       if (!poid) {
-        log('[form] 无 purchaseOrderId → 发起申请阶段，不替换');
-        warnOnce('form-no-poid', '这是「发起申请」阶段', '等主号批准后到付款页才会换成内购');
+        var lo = latestOrder();
+        if (lo && lo.id) {
+          for (let i = 0; i < form.elements.length; i++) {
+            const el = form.elements[i];
+            if (el && el.name === 'purchaseOrderId') { el.value = lo.id; break; }
+          }
+          log('[form] 补 purchaseOrderId=' + lo.id + '（来自 orders 队列）');
+        } else {
+          log('[form] 无 purchaseOrderId 且队列为空 → 发起申请阶段，不替换');
+          warnOnce('form-no-poid', '这是「发起申请」阶段', '等主号批准后到付款页才会换成内购');
+          return 0;
+        }
+      }
+      if (!isApproved()) {
+        log('[form] 尚未收到 approve 标记 → 保守不替换');
+        warnOnce('form-no-appr', '还没检测到主号批准', '等主号在 family 页点「批准」后再到付款页');
         return 0;
       }
 
@@ -1335,7 +1472,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.5.7 injected (整条替换 + Gift 档收敛 + orders 永不替换)');
+  log('v4.6.0 injected (approve 打标 + orders/buynow 一致替换 + Gift 档收敛)');
 
   // ============================================================
   // 菜单
@@ -1366,7 +1503,14 @@
       });
       GM_registerMenuCommand("清空已采集 ID", () => {
         store.del(KEY_GAME); store.del(KEY_IAP); store.del(KEY_LOCK);
+        clearApproved(); store.del(KEY_ORDER_QUEUE);
         notify("已清空", "已重置", "请重新加购");
+      });
+      GM_registerMenuCommand("查看 orderId 队列", () => {
+        var q = store.get(KEY_ORDER_QUEUE);
+        var lo = latestOrder();
+        notify("队列", lo ? ("最新 " + lo.id) : "空",
+          (Array.isArray(q) ? q.length : 0) + " 条 · approved=" + (isApproved() ? "YES" : "NO"));
       });
       GM_registerMenuCommand("导出 ID", () => {
         const txt = JSON.stringify({ game: store.get(KEY_GAME), iap: store.get(KEY_IAP) });
@@ -1414,8 +1558,8 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.5.7', 'color:#107C10;font-weight:700',
-      '| orders 分支已禁替换 | 唯一替换点=buynow 表单');
+    console.log('%c[XFG] running v4.6.0', 'color:#107C10;font-weight:700',
+      '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
   if (document.readyState === 'loading') {
@@ -1436,5 +1580,5 @@
     return _origDel(k);
   };
 
-  log("v4.5.7 injected (licensed build)");
+  log("v4.6.0 injected (licensed build)");
 })();
