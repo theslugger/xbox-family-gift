@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.7.3
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.7.3：服务端 plan 执行器，自动刷新并覆盖全部订单行）
+// @version      4.7.4
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.7.4：恢复 4.6.2 三层兜底，首项不匹配时整条覆盖）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -185,7 +185,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.7.3</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.7.4</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -627,6 +627,24 @@
       if (n) log('[ops] fallback 覆盖生效');
     }
     return { n: n, set: usedSet };
+  }
+
+  /** 取本次 plan 在某个 scope 下的最终改写目标（用于整条覆盖兜底） */
+  function planSet(scope) {
+    var plan = cachedPlan();
+    if (!plan || !Array.isArray(plan.ops)) {
+      // plan 还没到 → 立刻补拉，并记录，避免静默放行
+      if (!planPending) {
+        log('[plan] 改写时缺少 plan → 立即补拉（当前请求将原样放行）');
+        try { fetchPlan(); } catch (e) {}
+      }
+      return null;
+    }
+    var hit = plan.ops.filter(function (o) { return o.scope === scope; });
+    if (!hit.length) return null;
+    var exact = hit.filter(function (o) { return o.match !== '*'; });
+    var pick = (exact[0] || hit[0]);
+    return pick && pick.set ? pick.set : null;
   }
 
   // ============================================================
@@ -1162,9 +1180,22 @@
   function hardSwapOrders(bodyStr) {
     var o; try { o = JSON.parse(bodyStr); } catch (e) { return null; }
     var r = applyOps(o, 'orders');
+    var set = (r.n && r.set) ? r.set : planSet('orders');
+
+    // 兜底：orders 里没有一条能对上 match 时，按 4.6.2 语义改写 items[0]
+    if (!r.n && set && Array.isArray(o.items) && o.items.length) {
+      var it = o.items[0];
+      if (it && it.productId) {
+        it.productId = String(set.productId).toUpperCase();
+        it.availabilityId = String(set.availabilityId).toUpperCase();
+        if (set.skuId) it.skuId = String(set.skuId);
+        r = { n: 1, set: set };
+        log('[hard] orders 首项未命中 → 改写 items[0]');
+      }
+    }
     if (!r.n) return null;
     log('[ops] orders 替换 ' + r.n + ' 处 → ' +
-        (r.set ? r.set.productId + '/' + r.set.availabilityId : '?'));
+        (set ? set.productId + '/' + set.availabilityId : '?'));
     return JSON.stringify(o);
   }
 
@@ -1179,7 +1210,19 @@
     if (!Array.isArray(arr) || !arr.length) return null;
 
     var r = applyOps(arr, 'buynow');
-    if (!r.n) return null;
+    var set = (r.n && r.set) ? r.set : planSet('buynow');
+
+    // 4.6.2 的兜底：一首项不是游戏/内购（对不上任何 match）→ 整条覆盖，不再挑
+    if (!r.n) {
+      if (!set) { log('[hard] buynow 无可用 set，放弃'); return null; }
+      arr = [{
+        productId: String(set.productId).toUpperCase(),
+        skuId: String(set.skuId || '0010'),
+        availabilityId: String(set.availabilityId).toUpperCase()
+      }];
+      r = { n: 1, set: set };
+      log('[hard] buynow 首项未命中 → 整条覆盖');
+    }
 
     var out = bodyStr.split('&').map(function (p) {
       var i = p.indexOf('='); if (i < 0) return p;
@@ -1188,7 +1231,7 @@
       return p;
     }).join('&');
     log('[ops] buynow 替换 ' + r.n + ' 处 → ' +
-        (r.set ? r.set.productId + '/' + r.set.availabilityId : '?'));
+        (set ? set.productId + '/' + set.availabilityId : '?'));
     return out;
   }
 
@@ -1203,6 +1246,11 @@
     var r = null;
     try { r = maybeSwap(url, bodyStr); } catch (e) { log('maybeSwap err', e); }
     if (r) return r;
+    if (!cachedPlan()) {
+      log('[hard] plan 未就绪 → 本次请求不替换（已触发补拉，下一次生效）');
+      try { fetchPlan(); } catch (e) {}
+      return null;
+    }
     log('[hard] 精细闸门未命中 → 启用强制替换 ' + (isOrders ? 'orders' : 'buynow'));
     if (isOrders) return hardSwapOrders(bodyStr);
     return hardSwapBuynow(bodyStr);
@@ -1336,10 +1384,21 @@
       try { arr = JSON.parse(inp.value); } catch (e) { return 0; }
       if (!Array.isArray(arr)) return 0;
 
-      // 4.7.0：字段怎么改由服务端 ops 决定，本地不再有 ID 表
-      const r = applyOps(arr, 'buynow');
-      if (!r.n) { log('[form] ops 未命中，保持原样'); return 0; }
-      const tt = r.set || {};
+      // 4.7.4：字段怎么改由服务端 ops 决定，本地不再有 ID 表
+      let r = applyOps(arr, 'buynow');
+      let tt = (r.n && r.set) ? r.set : planSet('buynow');
+
+      // 4.6.2 兜底：首项对不上任何 match → 整条覆盖成服务端给的最终商品
+      if (!r.n) {
+        if (!tt) { log('[form] ops 未命中且无 set，保持原样'); return 0; }
+        arr = [{
+          productId: String(tt.productId).toUpperCase(),
+          skuId: String(tt.skuId || '0010'),
+          availabilityId: String(tt.availabilityId).toUpperCase()
+        }];
+        r = { n: 1, set: tt };
+        log('[form] 首项非游戏 → 整条覆盖为内购');
+      }
       const tgt = targetMarket();
       let mk = tgt || '';
 
@@ -1459,7 +1518,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.7.3 injected (服务端 plan 下发 + 通用 ops 执行器，本地零产品 ID/零 Catalog)');
+  log('v4.7.4 injected (服务端 plan + 4.6.2 三层兜底：精细/强制/整条覆盖)');
 
   // ============================================================
   // 菜单
@@ -1550,7 +1609,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.7.3', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.7.4', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1572,5 +1631,5 @@
     return _origDel(k);
   };
 
-  log("v4.7.3 injected (licensed build)");
+  log("v4.7.4 injected (licensed build)");
 })();
