@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.9.6
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.6：替换成功扣次 + 全部清空彻底归零 + 刷新按钮）
+// @version      4.9.7
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.9.7：扣次强制可见 + 清空回读校验 + 面板跨标签同步）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -203,7 +203,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v4.9.6</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.9.7</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -460,8 +460,40 @@
     giftConsumed = false;
     logLines = [];
 
+    // 回读验证：清空后必须真的读不到
+    var g2 = store.get(KEY_GAME), t2 = store.get(KEY_IAP);
+    var still = [];
+    if (g2 && g2.productId) still.push('①=' + g2.productId);
+    if (t2 && t2.productId) still.push('②=' + t2.productId);
+
     refreshPanel();
-    panelAdd('已全部清空 · 请重新获取①②');
+    if (still.length) {
+      panelAdd('⚠️ 清空后仍有残留: ' + still.join(' ') + '（存储未打通）');
+      log('[reset] 残留', still);
+    } else {
+      panelAdd('✅ 已全部清空 · 请重新获取①②');
+      log('[reset] 清空完成');
+    }
+    updateButtons();
+  }
+
+  // 面板跟随存储：别的标签页清空/获取后，这里 1.5 秒内同步
+  var _lastSig = '';
+  function panelSignature() {
+    var g = store.get(KEY_GAME), t = store.get(KEY_IAP), lk = store.get(KEY_LOCK);
+    var pt = cachedPlan();
+    return [
+      (g && g.productId) || '', (t && t.productId) || '',
+      lk ? '1' : '0',
+      pt ? 'p' : '-',
+      licenseState.valid ? licenseState.remaining : 'x'
+    ].join('|');
+  }
+  function syncIfChanged() {
+    try {
+      var sig = panelSignature();
+      if (sig !== _lastSig) { _lastSig = sig; refreshPanel(); }
+    } catch (e) {}
   }
 
   function refreshPanel() {
@@ -1255,20 +1287,48 @@
 
   /** 同一次赠礼只扣一次 */
   async function chargeOnce(t, g) {
-    if (giftConsumed) return;
-    giftConsumed = true;
-    const gid = currentGiftId();
-    const r = await consumeLicense(gid, {
-      market: resolvePlanMarket(g, t) || '',
-      iap: t ? t.productId : '',
-      game: g ? g.productId : ''
-    });
-    if (r.ok) {
-      panelAdd('已扣 1 次，剩余 ' + r.remaining + ' 次');
-      refreshPanel();
-    } else {
-      panelAdd('⚠️ 扣次失败: ' + r.error);
+    if (giftConsumed) {
+      log('[charge] 本次赠礼已扣过，跳过');
+      return;
     }
+    giftConsumed = true;
+
+    var gid = currentGiftId();
+    if (!gid) { gid = newGiftId(); }          // 付款页这条路径也要有幂等键
+
+    var mk = resolvePlanMarket(g, t) || '';
+    var iapId = (t && t.productId) ? t.productId : '';
+    var gameId = (g && g.productId) ? g.productId : '';
+
+    log('[charge] 开始扣次 giftId=' + gid + ' market=' + mk + ' iap=' + iapId + ' game=' + gameId);
+    panelAdd('⏳ 正在扣次…');
+
+    var r;
+    try {
+      r = await consumeLicense(gid, { market: mk, iap: iapId, game: gameId });
+    } catch (e) {
+      log('[charge] 异常: ' + e.message);
+      panelAdd('❌ 扣次异常: ' + e.message);
+      giftConsumed = false;
+      return;
+    }
+
+    log('[charge] 返回 ok=' + r.ok + ' remaining=' + (r.remaining === undefined ? '?' : r.remaining) +
+        ' dedup=' + (!!r.dedup) + ' err=' + (r.error || ''));
+
+    if (r.ok) {
+      if (r.dedup) {
+        panelAdd('已扣过（幂等去重），剩余 ' + r.remaining + ' 次');
+      } else {
+        panelAdd('💰 已扣 1 次，剩余 ' + r.remaining + ' 次');
+      }
+      notify('扣次成功', '剩余 ' + r.remaining + ' 次', r.dedup ? '本次赠礼此前已扣过' : '');
+    } else {
+      panelAdd('❌ 扣次失败: ' + r.error);
+      notify('扣次失败', r.error || '未知错误', '请检查授权码');
+      giftConsumed = false;                    // 失败允许重试
+    }
+    refreshPanel();
   }
 
   // 提示去重
@@ -1731,13 +1791,14 @@
   // 兜底 3：定时巡检 —— 主页面可能直接 .submit() 而不触发 submit 事件
   // 同时处理「iframe 已存在但表单还没填好」的时序
   setInterval(function () {
+    try { syncIfChanged(); } catch (e) {}
     try { inferApprovedFromDom(); } catch (e) {}
     try {
       const forms = PAGE.document ? PAGE.document.querySelectorAll('form') : [];
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.9.6 injected (扣次 + 清空 + 刷新)');
+  log('v4.9.7 injected (扣次可见 + 清空校验 + 同步)');
 
   // ============================================================
   // 菜单
@@ -1828,7 +1889,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v4.9.6', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v4.9.7', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -1850,5 +1911,5 @@
     return _origDel(k);
   };
 
-  log("v4.9.6 injected (licensed build)");
+  log("v4.9.7 injected (licensed build)");
 })();
