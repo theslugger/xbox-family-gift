@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      4.5.4
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.5.3：付款页补提交闸门，修付款报错）
+// @version      4.5.5
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（4.5.5：修 FailedToHydrate-ProductNotFound，updateURL 改 raw 防 CDN 旧缓存）
 // @author       theslugger
-// @updateURL    https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@main/web/xbox-family-gift.user.js
-// @downloadURL  https://cdn.jsdelivr.net/gh/theslugger/xbox-family-gift@main/web/xbox-family-gift.user.js
+// @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
+// @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @match        https://www.xbox.com/*
 // @match        https://www.microsoft.com/*
 // @match        https://account.microsoft.com/*
@@ -184,7 +184,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+        '<b>Xbox 送礼脚本 v4.5.5</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
         '<div id="xfg-state" style="margin-bottom:8px"></div>' +
@@ -1229,7 +1229,7 @@
       for (let i = 0; i < forms.length; i++) patchBuynowForm(forms[i]);
     } catch (e) {}
   }, 1500);
-  log('v4.5.4 injected (orders 永不替换 + buynow 单点替换，修 FailedToHydrate-ProductNotFound)');
+  log('v4.5.5 injected (orders 永不替换 + buynow 单点替换；updateURL=raw)');
 
   // ============================================================
   // 菜单
@@ -1304,6 +1304,12 @@
         notify("自检完成", "若看到①②弹窗说明采集正常", "记得清空");
       });
     }
+  } catch (e) {}
+
+  // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
+  try {
+    console.log('%c[XFG] running v4.5.5', 'color:#107C10;font-weight:700',
+      '| orders 分支已禁替换 | 唯一替换点=buynow 表单');
   } catch (e) {}
 
   if (document.readyState === 'loading') {
