@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      5.1.6
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.6：配对码隔离，多用户互不串台）
+// @version      5.1.7
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.7：子号生成配对码，主号输入后拉取 ①②）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -405,10 +405,18 @@
           'font:11px/1.4 ui-monospace,Menlo,monospace;color:#9c9;white-space:pre-wrap"></div>' +
         grabRows +
         tip +
-        '<div style="margin-top:6px;display:flex;gap:6px">' +
-          '<button id="xfg-pairNew" style="flex:1;padding:5px;background:#1a2a3a;color:#9cf;border:1px solid #265;border-radius:6px;cursor:pointer">生成配对码</button>' +
-          '<button id="xfg-pairJoin" style="flex:1;padding:5px;background:#2a2a1a;color:#ff9;border:1px solid #553;border-radius:6px;cursor:pointer">输入配对码</button>' +
-        '</div>' +
+        (role === 'child'
+          ? '<div style="margin-top:6px;display:flex;gap:6px">' +
+              '<button id="xfg-pairNew" style="flex:1;padding:6px;background:#1a2a3a;color:#9cf;border:1px solid #265;border-radius:6px;cursor:pointer">生成配对码</button>' +
+            '</div>'
+          : role === 'parent'
+          ? '<div style="margin-top:6px;display:flex;gap:6px">' +
+              '<button id="xfg-pairJoin" style="flex:1;padding:6px;background:#2a2a1a;color:#ff9;border:1px solid #553;border-radius:6px;cursor:pointer">输入子号的配对码</button>' +
+            '</div>'
+          : '<div style="margin-top:6px;display:flex;gap:6px">' +
+              '<button id="xfg-pairNew" style="flex:1;padding:5px;background:#1a2a3a;color:#9cf;border:1px solid #265;border-radius:6px;cursor:pointer">生成配对码</button>' +
+              '<button id="xfg-pairJoin" style="flex:1;padding:5px;background:#2a2a1a;color:#ff9;border:1px solid #553;border-radius:6px;cursor:pointer">输入配对码</button>' +
+            '</div>') +
         '<div style="margin-top:6px;display:flex;gap:6px">' +
           '<button id="xfg-lic" style="flex:1;padding:5px;background:#2a1a3a;color:#c8f;border:1px solid #536;border-radius:6px;cursor:pointer">授权</button>' +
           '<button id="xfg-refresh" style="flex:0 0 60px;padding:5px;background:#1a2f3a;color:#9cf;border:1px solid #265;border-radius:6px;cursor:pointer">刷新</button>' +
@@ -441,8 +449,10 @@
       if (grabState()) { try { fetchPlan(true); } catch (e) {} }
       refreshPanel();
     });
-    panelEl.querySelector('#xfg-pairNew').addEventListener('click', createPair);
-    panelEl.querySelector('#xfg-pairJoin').addEventListener('click', joinPair);
+    var bPN = panelEl.querySelector('#xfg-pairNew');
+    var bPJ = panelEl.querySelector('#xfg-pairJoin');
+    if (bPN) bPN.addEventListener('click', createPair);
+    if (bPJ) bPJ.addEventListener('click', joinPair);
 
     var bG1 = panelEl.querySelector('#xfg-grab1');
     var bG2 = panelEl.querySelector('#xfg-grab2');
@@ -534,8 +544,10 @@
 
   /** 子号窗口：生成配对码 */
   function createPair() {
+    var role = currentRole();
+    if (role === 'parent') { panelAdd('❌ 配对码由子号生成，主号只需输入'); return; }
     var code = shareCode();
-    if (!code) { panelAdd('❌ 先生成/输入授权码'); return; }
+    if (!code) { panelAdd('❌ 先填入授权码'); return; }
     panelAdd('正在生成配对码…');
     fetch(SERVER_BASE + '/api/pair/create', {
       method: 'POST',
@@ -548,18 +560,20 @@
         if (!j || !j.ok) { panelAdd('❌ 生成失败: ' + ((j && j.error) || '?')); return; }
         setPairId(j.data.pairId);
         panelAdd('🔑 配对码 ' + j.data.pairId + ' · ' + Math.round(j.data.expiresIn / 60) + ' 分钟内有效');
-        notify('配对码已生成', j.data.pairId, '在主号窗口输入这个数字');
+        notify('配对码已生成', j.data.pairId, '把这个数字告诉主号，让它在主号窗口输入');
         refreshPanel();
       })
       .catch(function (e) { panelAdd('❌ 网络错误: ' + e.message); });
   }
 
-  /** 任一侧：加入已有配对码 */
+  /** 主号窗口：输入子号生成的配对码 */
   function joinPair() {
+    var role = currentRole();
+    if (role === 'child') { panelAdd('❌ 子号窗口负责生成配对码，不需要输入'); return; }
     var code = shareCode();
     if (!code) { panelAdd('❌ 先填入授权码'); return; }
     var cur = pairId();
-    var raw = prompt('输入配对码（子号窗口生成的 6 位数字）：', cur);
+    var raw = prompt('输入子号窗口生成的配对码（6 位数字）：', cur);
     if (raw === null) return;
     var id = String(raw).trim();
     if (!/^\d{6}$/.test(id)) { panelAdd('❌ 配对码必须是 6 位数字'); return; }
@@ -574,8 +588,9 @@
       .then(function (j) {
         if (!j || !j.ok) { panelAdd('❌ 加入失败: ' + ((j && j.error) || '?')); return; }
         setPairId(j.data.pairId);
-        panelAdd('✅ 已加入配对 ' + j.data.pairId + '（组内 ' + j.data.members + ' 个窗口）');
-        notify('配对成功', '配对码 ' + j.data.pairId, '现在会自动同步 ①②');
+        panelAdd('✅ 已加入子号配对 ' + j.data.pairId + '（组内 ' + j.data.members + ' 个窗口）');
+        notify('配对成功', '配对码 ' + j.data.pairId, '正在拉取子号抓的 ①②');
+        // 加入后立刻拉一次，主号马上就能看到子号抓的 ①②
         try { pullShare(true); } catch (e) {}
         refreshPanel();
       })
@@ -919,12 +934,19 @@
         var pid = pairId();
 
         // 配对状态优先展示
-        var pairLine = !hasCode
-          ? '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:#2f1212;border:1px solid #7a2f2f;font-size:10.5px;color:#f88">配对：先填入授权码</div>'
-          : !pid
-          ? '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:#2a2410;border:1px solid #7a6a2f;font-size:10.5px;color:#d4b17a">配对：未配对（子号点「生成配对码」，主号点「输入配对码」）</div>'
-          : '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:#0e2f12;border:1px solid #2f7a3a;font-size:10.5px;color:#8fff9f">配对：<b style="font-family:ui-monospace,monospace;font-size:12.5px">' + esc(pid) + '</b> · 已连接</div>';
-
+        var pairLine;
+        if (!hasCode) {
+          pairLine = '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:#2f1212;border:1px solid #7a2f2f;font-size:10.5px;color:#f88">配对：先填入授权码</div>';
+        } else if (!pid) {
+          pairLine = role === 'child'
+            ? '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:#2a2410;border:1px solid #7a6a2f;font-size:10.5px;color:#d4b17a">配对：点下方「生成配对码」，把 6 位数字告诉主号</div>'
+            : '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:#2a2410;border:1px solid #7a6a2f;font-size:10.5px;color:#d4b17a">配对：点下方「输入子号的配对码」，填子号生成的 6 位数字</div>';
+        } else {
+          pairLine = '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:#0e2f12;border:1px solid #2f7a3a;font-size:10.5px;color:#8fff9f">' +
+            '配对：<b style="font-family:ui-monospace,monospace;font-size:12.5px">' + esc(pid) + '</b>' +
+            (ok ? ' · 已同步 ①②' : ' · 已连接，等子号抓取') +
+            '</div>';
+        }
         return pairLine;
 
       })() +
@@ -2325,7 +2347,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v5.1.6', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v5.1.7', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -2347,5 +2369,5 @@
     return _origDel(k);
   };
 
-  log("v5.1.6 injected (licensed build)");
+  log("v5.1.7 injected (licensed build)");
 })();
