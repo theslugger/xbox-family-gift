@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      5.1.3
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.3：同一表单只替换+扣次一次，修1.5秒巡检连扣）
+// @version      5.1.4
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.4：主号/子号分窗口操作，面板按角色显示）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -344,6 +344,19 @@
     } catch (e) { return false; }
   }
 
+  /**
+   * 角色识别：主号/子号分两个浏览器窗口操作
+   *   子号 → 无痕窗口，打开 www.xbox.com，负责加购与发起申请
+   *   主号 → 普通窗口，打开 account.microsoft.com，负责批准与付款
+   * 面板按角色只显示该做的操作，避免点错。
+   */
+  function currentRole() {
+    var h = location.hostname;
+    if (h === 'account.microsoft.com') return 'parent';
+    if (h === 'www.xbox.com' || h === 'xbox.com') return 'child';
+    return 'both';
+  }
+
   function buildPanel() {
     if (panelEl || !document.body) return;
     if (!shouldShowPanel()) { log('非主控页面，不显示面板'); return; }
@@ -353,14 +366,15 @@
       'background:#0b0b0b;color:#eee;border:1px solid #107C10;border-radius:10px;' +
       'font:12px/1.45 -apple-system,Segoe UI,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.5);overflow:hidden';
 
-    panelEl.innerHTML =
-      '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<b>Xbox 送礼脚本 v5.1.3</b><span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
-      '</div>' +
-      '<div id="xfg-bd" style="padding:10px">' +
-        '<div id="xfg-state" style="margin-bottom:8px"></div>' +
-        '<div id="xfg-log" style="max-height:150px;overflow:auto;background:#000;border-radius:6px;padding:6px;' +
-          'font:11px/1.4 ui-monospace,Menlo,monospace;color:#9c9;white-space:pre-wrap"></div>' +
+    var role = currentRole();
+    var roleTag = role === 'child'
+      ? '<span style="background:#1f6feb33;color:#79c0ff;border:1px solid #1f6feb66;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;margin-left:6px">子号</span>'
+      : role === 'parent'
+      ? '<span style="background:#23863633;color:#7ee787;border:1px solid #23863666;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:700;margin-left:6px">主号</span>'
+      : '';
+
+    // 子号：获取 ID；主号：不显示获取按钮（那边只负责批准付款）
+    var grabRows = role === 'parent' ? '' :
         '<div style="margin-top:8px;display:flex;gap:6px">' +
           '<button id="xfg-grab1" style="flex:1;padding:6px;background:#0d2a0d;color:#7fd;border:1px solid #2a5;border-radius:6px;cursor:pointer">获取①游戏ID</button>' +
           '<button id="xfg-del1" style="flex:0 0 54px;padding:6px;background:#2a0d0d;color:#f99;border:1px solid #633;border-radius:6px;cursor:pointer">删除</button>' +
@@ -368,7 +382,29 @@
         '<div style="margin-top:6px;display:flex;gap:6px">' +
           '<button id="xfg-grab2" style="flex:1;padding:6px;background:#0d2a0d;color:#7fd;border:1px solid #2a5;border-radius:6px;cursor:pointer">获取②内购ID</button>' +
           '<button id="xfg-del2" style="flex:0 0 54px;padding:6px;background:#2a0d0d;color:#f99;border:1px solid #633;border-radius:6px;cursor:pointer">删除</button>' +
-        '</div>' +
+        '</div>';
+
+    var tip = role === 'parent'
+      ? '<div style="margin-top:8px;padding:7px 9px;border-radius:7px;background:#12261a;border:1px solid #23863655;color:#7ee787;font-size:11px;line-height:1.5">' +
+        '主号窗口：等子号发起申请后，在微软页面点「批准」，脚本自动捕获并替换付款页。' +
+        '</div>'
+      : role === 'child'
+      ? '<div style="margin-top:8px;padding:7px 9px;border-radius:7px;background:#0d1f33;border:1px solid #1f6feb55;color:#79c0ff;font-size:11px;line-height:1.5">' +
+        '子号窗口：加购游戏 → 点①；加购内购 → 点②。然后发起购买申请。' +
+        '</div>'
+      : '';
+
+    panelEl.innerHTML =
+      '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
+        '<span><b>Xbox 送礼 v5.1.4</b>' + roleTag + '</span>' +
+        '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
+      '</div>' +
+      '<div id="xfg-bd" style="padding:10px">' +
+        '<div id="xfg-state" style="margin-bottom:8px"></div>' +
+        '<div id="xfg-log" style="max-height:150px;overflow:auto;background:#000;border-radius:6px;padding:6px;' +
+          'font:11px/1.4 ui-monospace,Menlo,monospace;color:#9c9;white-space:pre-wrap"></div>' +
+        grabRows +
+        tip +
         '<div style="margin-top:6px;display:flex;gap:6px">' +
           '<button id="xfg-lic" style="flex:1;padding:5px;background:#2a1a3a;color:#c8f;border:1px solid #536;border-radius:6px;cursor:pointer">授权</button>' +
           '<button id="xfg-refresh" style="flex:0 0 60px;padding:5px;background:#1a2f3a;color:#9cf;border:1px solid #265;border-radius:6px;cursor:pointer">刷新</button>' +
@@ -400,10 +436,14 @@
       if (grabState()) { try { fetchPlan(true); } catch (e) {} }
       refreshPanel();
     });
-    panelEl.querySelector('#xfg-grab1').addEventListener('click', function () { grabTo('game'); });
-    panelEl.querySelector('#xfg-grab2').addEventListener('click', function () { grabTo('iap'); });
-    panelEl.querySelector('#xfg-del1').addEventListener('click', function () { clearSlot('game'); });
-    panelEl.querySelector('#xfg-del2').addEventListener('click', function () { clearSlot('iap'); });
+    var bG1 = panelEl.querySelector('#xfg-grab1');
+    var bG2 = panelEl.querySelector('#xfg-grab2');
+    var bD1 = panelEl.querySelector('#xfg-del1');
+    var bD2 = panelEl.querySelector('#xfg-del2');
+    if (bG1) bG1.addEventListener('click', function () { grabTo('game'); });
+    if (bG2) bG2.addEventListener('click', function () { grabTo('iap'); });
+    if (bD1) bD1.addEventListener('click', function () { clearSlot('game'); });
+    if (bD2) bD2.addEventListener('click', function () { clearSlot('iap'); });
     panelEl.querySelector('#xfg-lic').addEventListener('click', async function () {
       var cur = getLicense();
       var raw = prompt(
@@ -717,6 +757,19 @@
         + (lk ? '<b style="color:#ff0">🔒 已锁定</b>' : '待获取')
         + (isApproved() ? ' · <b style="color:#7fd">已批准</b>' : ' · 待批准')
       + '</div>' +
+      (function () {
+        // 跨窗口诊断：确认主号窗口读到了子号存的 ①②
+        var role = currentRole();
+        if (role === 'parent') {
+          var ok = grabState();
+          return '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:' +
+            (ok ? '#0e2f12' : '#2f1212') + ';border:1px solid ' + (ok ? '#2f7a3a' : '#7a2f2f') +
+            ';font-size:10.5px;color:' + (ok ? '#8fff9f' : '#f88') + '">' +
+            (ok ? '跨窗口同步 ✅ 已读到子号的 ①②' : '跨窗口同步 ⚠️ 没读到子号的 ①②（检查两窗口是否同一份脚本、GM 存储是否共享）') +
+            '</div>';
+        }
+        return '';
+      })() +
       (function () {
         var lic = getLicense();
         if (!lic) return '<div style="margin-top:2px;font-size:11px;color:#f88">授权：未激活</div>';
@@ -2109,7 +2162,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v5.1.3', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v5.1.4', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -2131,5 +2184,5 @@
     return _origDel(k);
   };
 
-  log("v5.1.3 injected (licensed build)");
+  log("v5.1.4 injected (licensed build)");
 })();
