@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      5.1.4
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.4：主号/子号分窗口操作，面板按角色显示）
+// @version      5.1.5
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.5：普通+无痕双窗口，①② 经服务端同步）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -433,6 +433,7 @@
       clearChargedSession();
       panelAdd('已刷新 · 重新读取本地面板数据');
       try { verifyLicense(); } catch (e) {}
+      try { pullShare(true); } catch (e) {}
       if (grabState()) { try { fetchPlan(true); } catch (e) {} }
       refreshPanel();
     });
@@ -478,6 +479,9 @@
     refreshPanel();
     var gmOk = (typeof GM_setValue === 'function' && typeof GM_getValue === 'function');
     panelAdd('脚本已注入 · 存储=' + (gmOk ? 'GM 跨域 ✅' : 'localStorage ⚠️ 不跨域'));
+
+    // 启动即尝试从另一窗口同步（有授权码时）
+    setTimeout(function () { try { pullShare(true); } catch (e) {} }, 600);
   }
 
   // ============================================================
@@ -499,6 +503,98 @@
     m = u.match(/\b([A-Z0-9]{12})\b/);
     if (m && /[0-9]/.test(m[1]) && /[A-Z]/.test(m[1])) return m[1];
     return '';
+  }
+
+  // ============================================================
+  // 【跨窗口共享】普通窗口 ↔ 无痕窗口
+  // ------------------------------------------------------------
+  // 普通 Chrome 和无痕窗口的 GM/localStorage 完全隔离，两边读不到对方。
+  // 所以 ①② 通过服务端中转：用授权码当 key，6 小时有效。
+  //   pushShare()  抓完 ID 后上传
+  //   pullShare()  另一窗口打开时拉取
+  // ============================================================
+  var _lastPullAt = 0;
+
+  function shareCode() {
+    var lc = getLicense();
+    return lc && lc.code ? lc.code : '';
+  }
+
+  /** 上传当前 ①② 到服务端 */
+  function pushShare() {
+    var code = shareCode();
+    if (!code) return;
+    var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+    if (!g && !t) return;
+
+    var body = { code: code };
+    if (g && g.productId) body.game = { productId: g.productId, skuId: g.skuId || '0010', availabilityId: g.availabilityId || '', market: g.market || '' };
+    if (t && t.productId) body.iap = { productId: t.productId, skuId: t.skuId || '0010', availabilityId: t.availabilityId || '', market: t.market || '' };
+    var mk = resolvePlanMarket(g, t);
+    if (mk) body.market = mk;
+
+    fetch(SERVER_BASE + '/api/share', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'omit',
+      body: JSON.stringify(body)
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j && j.ok) log('[share] 已上传 ①② 到服务端');
+        else log('[share] 上传失败: ' + ((j && j.error) || '?'));
+      })
+      .catch(function (e) { log('[share] 上传异常: ' + e.message); });
+  }
+
+  /** 从服务端拉取 ①②（另一窗口抓的） */
+  function pullShare(force) {
+    var code = shareCode();
+    if (!code) return Promise.resolve(null);
+    var now = Date.now();
+    if (!force && now - _lastPullAt < 5000) return Promise.resolve(null);
+    _lastPullAt = now;
+
+    return fetch(SERVER_BASE + '/api/share?code=' + encodeURIComponent(code), {
+      credentials: 'omit'
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.ok) {
+          log('[share] 拉取失败: ' + ((j && j.error) || '?'));
+          return null;
+        }
+        if (!j.data) { log('[share] 服务端暂无共享数据'); return null; }
+
+        var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
+        var changed = false;
+
+        if (j.data.game && j.data.game.productId) {
+          if (!g || g.productId !== j.data.game.productId) {
+            store.set(KEY_GAME, j.data.game); changed = true;
+            log('[share] ← 同步 ① 游戏 ' + j.data.game.productId);
+          }
+        }
+        if (j.data.iap && j.data.iap.productId) {
+          if (!t || t.productId !== j.data.iap.productId) {
+            store.set(KEY_IAP, j.data.iap); changed = true;
+            log('[share] ← 同步 ② 内购 ' + j.data.iap.productId);
+          }
+        }
+        if (changed) {
+          var g2 = store.get(KEY_GAME), t2 = store.get(KEY_IAP);
+          if (g2 && t2 && g2.productId && t2.productId) {
+            store.set(KEY_LOCK, true);
+            try { fetchPlan(true); } catch (e) {}
+          }
+          panelAdd('✅ 已从另一窗口同步 ①②');
+          refreshPanel();
+        } else {
+          log('[share] 本地已是最新');
+        }
+        return j.data;
+      })
+      .catch(function (e) { log('[share] 拉取异常: ' + e.message); return null; });
   }
 
   /** 抓当前页 ID 并写入指定槽位（'game' | 'iap'） */
@@ -530,6 +626,7 @@
     }
     panelAdd('✅ 已获取' + (slot === 'game' ? '① 游戏' : '② 内购') + ': ' + pid);
     notify('✅ 已获取' + (slot === 'game' ? '① 游戏' : '② 内购'), pid, '来自当前页面 URL');
+    try { pushShare(); } catch (e) { log('[share] push err', e); }
     // 两个都有就锁定并拉 plan
     var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
     if (g && g.productId && t && t.productId) {
@@ -548,6 +645,7 @@
     store.del(KEY_PLAN);
     planState = null;
     panelAdd('已删除' + (slot === 'game' ? '① 游戏' : '② 内购') + '，可重新获取');
+    try { pushShare(); } catch (e) {}
     refreshPanel();
   }
 
@@ -760,12 +858,22 @@
       (function () {
         // 跨窗口诊断：确认主号窗口读到了子号存的 ①②
         var role = currentRole();
+        var ok = grabState();
+        var hasCode = !!shareCode();
         if (role === 'parent') {
-          var ok = grabState();
           return '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:' +
             (ok ? '#0e2f12' : '#2f1212') + ';border:1px solid ' + (ok ? '#2f7a3a' : '#7a2f2f') +
             ';font-size:10.5px;color:' + (ok ? '#8fff9f' : '#f88') + '">' +
-            (ok ? '跨窗口同步 ✅ 已读到子号的 ①②' : '跨窗口同步 ⚠️ 没读到子号的 ①②（检查两窗口是否同一份脚本、GM 存储是否共享）') +
+            (ok ? '跨窗口同步 ✅ 已读到子号抓的 ①②'
+                : (hasCode ? '跨窗口同步 ⏳ 等子号窗口抓完 ①② 后自动同步（15 秒轮询）'
+                           : '跨窗口同步 ⚠️ 请先在两个窗口都填入同一张授权码')) +
+            '</div>';
+        }
+        if (role === 'child') {
+          return '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:' +
+            (hasCode ? '#0d1f33' : '#2f1212') + ';border:1px solid ' + (hasCode ? '#1f6feb55' : '#7a2f2f') +
+            ';font-size:10.5px;color:' + (hasCode ? '#79c0ff' : '#f88') + '">' +
+            (hasCode ? '抓完 ①② 会自动同步到主号窗口' : '填入授权码后，①② 会同步到主号窗口') +
             '</div>';
         }
         return '';
@@ -2063,6 +2171,11 @@
 
   // 兜底 3：定时巡检 —— 主页面可能直接 .submit() 而不触发 submit 事件
   // 同时处理「iframe 已存在但表单还没填好」的时序
+  // 跨窗口同步轮询：15 秒一次，只在有授权码时跑
+  setInterval(function () {
+    try { if (shareCode()) pullShare(false); } catch (e) {}
+  }, 15000);
+
   setInterval(function () {
     try { syncIfChanged(); } catch (e) {}
     try { inferApprovedFromDom(); } catch (e) {}
@@ -2162,7 +2275,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v5.1.4', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v5.1.5', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -2184,5 +2297,5 @@
     return _origDel(k);
   };
 
-  log("v5.1.4 injected (licensed build)");
+  log("v5.1.5 injected (licensed build)");
 })();
