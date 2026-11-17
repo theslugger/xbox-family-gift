@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      5.1.5
-// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.5：普通+无痕双窗口，①② 经服务端同步）
+// @version      5.1.6
+// @description  子号加购游戏/内购 → 子号发起 → 主号 family safety 批准 → 付款时换成内购。需授权码激活（5.1.6：配对码隔离，多用户互不串台）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
 // @downloadURL  https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-family-gift.user.js
@@ -406,6 +406,10 @@
         grabRows +
         tip +
         '<div style="margin-top:6px;display:flex;gap:6px">' +
+          '<button id="xfg-pairNew" style="flex:1;padding:5px;background:#1a2a3a;color:#9cf;border:1px solid #265;border-radius:6px;cursor:pointer">生成配对码</button>' +
+          '<button id="xfg-pairJoin" style="flex:1;padding:5px;background:#2a2a1a;color:#ff9;border:1px solid #553;border-radius:6px;cursor:pointer">输入配对码</button>' +
+        '</div>' +
+        '<div style="margin-top:6px;display:flex;gap:6px">' +
           '<button id="xfg-lic" style="flex:1;padding:5px;background:#2a1a3a;color:#c8f;border:1px solid #536;border-radius:6px;cursor:pointer">授权</button>' +
           '<button id="xfg-refresh" style="flex:0 0 60px;padding:5px;background:#1a2f3a;color:#9cf;border:1px solid #265;border-radius:6px;cursor:pointer">刷新</button>' +
           '<button id="xfg-clear" style="flex:1;padding:5px;background:#3a1a1a;color:#f99;border:1px solid #633;border-radius:6px;cursor:pointer">全部清空</button>' +
@@ -437,6 +441,9 @@
       if (grabState()) { try { fetchPlan(true); } catch (e) {} }
       refreshPanel();
     });
+    panelEl.querySelector('#xfg-pairNew').addEventListener('click', createPair);
+    panelEl.querySelector('#xfg-pairJoin').addEventListener('click', joinPair);
+
     var bG1 = panelEl.querySelector('#xfg-grab1');
     var bG2 = panelEl.querySelector('#xfg-grab2');
     var bD1 = panelEl.querySelector('#xfg-del1');
@@ -506,28 +513,83 @@
   }
 
   // ============================================================
-  // 【跨窗口共享】普通窗口 ↔ 无痕窗口
+  // 【跨窗口共享】配对码隔离
   // ------------------------------------------------------------
-  // 普通 Chrome 和无痕窗口的 GM/localStorage 完全隔离，两边读不到对方。
-  // 所以 ①② 通过服务端中转：用授权码当 key，6 小时有效。
-  //   pushShare()  抓完 ID 后上传
-  //   pullShare()  另一窗口打开时拉取
+  // 普通 Chrome 与无痕窗口存储完全隔离，①② 经服务端中转。
+  // 为避免同一张授权码被多人共用时串台，引入 6 位配对码：
+  //   子号窗口「生成配对码」→ 主号窗口「输入配对码」→ 同组共享
   // ============================================================
+  var KEY_PAIR = 'xfg_pairId';
   var _lastPullAt = 0;
 
   function shareCode() {
     var lc = getLicense();
     return lc && lc.code ? lc.code : '';
   }
+  function pairId() {
+    var v = store.get(KEY_PAIR);
+    return v && typeof v === 'string' ? v : '';
+  }
+  function setPairId(id) { store.set(KEY_PAIR, String(id || '')); }
 
-  /** 上传当前 ①② 到服务端 */
-  function pushShare() {
+  /** 子号窗口：生成配对码 */
+  function createPair() {
     var code = shareCode();
-    if (!code) return;
+    if (!code) { panelAdd('❌ 先生成/输入授权码'); return; }
+    panelAdd('正在生成配对码…');
+    fetch(SERVER_BASE + '/api/pair/create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'omit',
+      body: JSON.stringify({ code: code })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.ok) { panelAdd('❌ 生成失败: ' + ((j && j.error) || '?')); return; }
+        setPairId(j.data.pairId);
+        panelAdd('🔑 配对码 ' + j.data.pairId + ' · ' + Math.round(j.data.expiresIn / 60) + ' 分钟内有效');
+        notify('配对码已生成', j.data.pairId, '在主号窗口输入这个数字');
+        refreshPanel();
+      })
+      .catch(function (e) { panelAdd('❌ 网络错误: ' + e.message); });
+  }
+
+  /** 任一侧：加入已有配对码 */
+  function joinPair() {
+    var code = shareCode();
+    if (!code) { panelAdd('❌ 先填入授权码'); return; }
+    var cur = pairId();
+    var raw = prompt('输入配对码（子号窗口生成的 6 位数字）：', cur);
+    if (raw === null) return;
+    var id = String(raw).trim();
+    if (!/^\d{6}$/.test(id)) { panelAdd('❌ 配对码必须是 6 位数字'); return; }
+    panelAdd('正在加入配对 ' + id + '…');
+    fetch(SERVER_BASE + '/api/pair/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'omit',
+      body: JSON.stringify({ code: code, pairId: id })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.ok) { panelAdd('❌ 加入失败: ' + ((j && j.error) || '?')); return; }
+        setPairId(j.data.pairId);
+        panelAdd('✅ 已加入配对 ' + j.data.pairId + '（组内 ' + j.data.members + ' 个窗口）');
+        notify('配对成功', '配对码 ' + j.data.pairId, '现在会自动同步 ①②');
+        try { pullShare(true); } catch (e) {}
+        refreshPanel();
+      })
+      .catch(function (e) { panelAdd('❌ 网络错误: ' + e.message); });
+  }
+
+  /** 上传 ①② */
+  function pushShare() {
+    var code = shareCode(), pid = pairId();
+    if (!code || !pid) return;
     var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
     if (!g && !t) return;
 
-    var body = { code: code };
+    var body = { code: code, pairId: pid };
     if (g && g.productId) body.game = { productId: g.productId, skuId: g.skuId || '0010', availabilityId: g.availabilityId || '', market: g.market || '' };
     if (t && t.productId) body.iap = { productId: t.productId, skuId: t.skuId || '0010', availabilityId: t.availabilityId || '', market: t.market || '' };
     var mk = resolvePlanMarket(g, t);
@@ -541,45 +603,38 @@
     })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        if (j && j.ok) log('[share] 已上传 ①② 到服务端');
+        if (j && j.ok) log('[share] 已上传到配对 ' + pid);
         else log('[share] 上传失败: ' + ((j && j.error) || '?'));
       })
       .catch(function (e) { log('[share] 上传异常: ' + e.message); });
   }
 
-  /** 从服务端拉取 ①②（另一窗口抓的） */
+  /** 从配对组拉取 ①② */
   function pullShare(force) {
-    var code = shareCode();
-    if (!code) return Promise.resolve(null);
+    var code = shareCode(), pid = pairId();
+    if (!code || !pid) return Promise.resolve(null);
     var now = Date.now();
     if (!force && now - _lastPullAt < 5000) return Promise.resolve(null);
     _lastPullAt = now;
 
-    return fetch(SERVER_BASE + '/api/share?code=' + encodeURIComponent(code), {
+    return fetch(SERVER_BASE + '/api/share?code=' + encodeURIComponent(code) + '&pairId=' + encodeURIComponent(pid), {
       credentials: 'omit'
     })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        if (!j || !j.ok) {
-          log('[share] 拉取失败: ' + ((j && j.error) || '?'));
-          return null;
-        }
-        if (!j.data) { log('[share] 服务端暂无共享数据'); return null; }
+        if (!j || !j.ok) { log('[share] 拉取失败: ' + ((j && j.error) || '?')); return null; }
+        if (!j.data) { log('[share] 配对组内暂无 ①②'); return null; }
 
         var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
         var changed = false;
 
-        if (j.data.game && j.data.game.productId) {
-          if (!g || g.productId !== j.data.game.productId) {
-            store.set(KEY_GAME, j.data.game); changed = true;
-            log('[share] ← 同步 ① 游戏 ' + j.data.game.productId);
-          }
+        if (j.data.game && j.data.game.productId && (!g || g.productId !== j.data.game.productId)) {
+          store.set(KEY_GAME, j.data.game); changed = true;
+          log('[share] ← 同步 ① 游戏 ' + j.data.game.productId);
         }
-        if (j.data.iap && j.data.iap.productId) {
-          if (!t || t.productId !== j.data.iap.productId) {
-            store.set(KEY_IAP, j.data.iap); changed = true;
-            log('[share] ← 同步 ② 内购 ' + j.data.iap.productId);
-          }
+        if (j.data.iap && j.data.iap.productId && (!t || t.productId !== j.data.iap.productId)) {
+          store.set(KEY_IAP, j.data.iap); changed = true;
+          log('[share] ← 同步 ② 内购 ' + j.data.iap.productId);
         }
         if (changed) {
           var g2 = store.get(KEY_GAME), t2 = store.get(KEY_IAP);
@@ -587,7 +642,7 @@
             store.set(KEY_LOCK, true);
             try { fetchPlan(true); } catch (e) {}
           }
-          panelAdd('✅ 已从另一窗口同步 ①②');
+          panelAdd('✅ 已从配对组同步 ①②');
           refreshPanel();
         } else {
           log('[share] 本地已是最新');
@@ -597,7 +652,7 @@
       .catch(function (e) { log('[share] 拉取异常: ' + e.message); return null; });
   }
 
-  /** 抓当前页 ID 并写入指定槽位（'game' | 'iap'） */
+  /** 抓当前页 ID 并写入指定槽位（'game' | 'iap'） */  /** 抓当前页 ID 并写入指定槽位（'game' | 'iap'） */
   function grabTo(slot) {
     var pid = pidFromUrl();
     if (!pid) {
@@ -730,6 +785,7 @@
     store.del(KEY_ORDER_QUEUE);
     try { clearApproved(); } catch (e) {}
     store.del('xfg_iapMarket');
+    store.del(KEY_PAIR);
     store.del('xfg_lastMarket');
     store.del(KEY_MARKET);
 
@@ -860,23 +916,17 @@
         var role = currentRole();
         var ok = grabState();
         var hasCode = !!shareCode();
-        if (role === 'parent') {
-          return '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:' +
-            (ok ? '#0e2f12' : '#2f1212') + ';border:1px solid ' + (ok ? '#2f7a3a' : '#7a2f2f') +
-            ';font-size:10.5px;color:' + (ok ? '#8fff9f' : '#f88') + '">' +
-            (ok ? '跨窗口同步 ✅ 已读到子号抓的 ①②'
-                : (hasCode ? '跨窗口同步 ⏳ 等子号窗口抓完 ①② 后自动同步（15 秒轮询）'
-                           : '跨窗口同步 ⚠️ 请先在两个窗口都填入同一张授权码')) +
-            '</div>';
-        }
-        if (role === 'child') {
-          return '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:' +
-            (hasCode ? '#0d1f33' : '#2f1212') + ';border:1px solid ' + (hasCode ? '#1f6feb55' : '#7a2f2f') +
-            ';font-size:10.5px;color:' + (hasCode ? '#79c0ff' : '#f88') + '">' +
-            (hasCode ? '抓完 ①② 会自动同步到主号窗口' : '填入授权码后，①② 会同步到主号窗口') +
-            '</div>';
-        }
-        return '';
+        var pid = pairId();
+
+        // 配对状态优先展示
+        var pairLine = !hasCode
+          ? '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:#2f1212;border:1px solid #7a2f2f;font-size:10.5px;color:#f88">配对：先填入授权码</div>'
+          : !pid
+          ? '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:#2a2410;border:1px solid #7a6a2f;font-size:10.5px;color:#d4b17a">配对：未配对（子号点「生成配对码」，主号点「输入配对码」）</div>'
+          : '<div style="margin-top:4px;padding:5px 8px;border-radius:6px;background:#0e2f12;border:1px solid #2f7a3a;font-size:10.5px;color:#8fff9f">配对：<b style="font-family:ui-monospace,monospace;font-size:12.5px">' + esc(pid) + '</b> · 已连接</div>';
+
+        return pairLine;
+
       })() +
       (function () {
         var lic = getLicense();
@@ -2275,7 +2325,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v5.1.5', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v5.1.6', 'color:#107C10;font-weight:700',
       '| approved 判据 | orders+buynow 一致换内购');
   } catch (e) {}
 
@@ -2297,5 +2347,5 @@
     return _origDel(k);
   };
 
-  log("v5.1.5 injected (licensed build)");
+  log("v5.1.6 injected (licensed build)");
 })();
