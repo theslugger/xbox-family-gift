@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.3.0
+// @version      3.3.1
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v3.3.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v3.3.1</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -800,28 +800,68 @@
    * 优先级：页面状态 → 配对同步的商品记录 → 页面路径 → US
    */
   function market() {
+    // 1) 页面状态（最权威）
     try {
       var P = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
       var st = P.__STORE_CART_STATE__;
       if (st && st.appContext && st.appContext.market) {
-        var m0 = String(st.appContext.market).toUpperCase().slice(0, 2);
+        var m0 = normMk(st.appContext.market);
         if (m0) return m0;
       }
     } catch (e) {}
 
+    // 2) 配对同步的商品记录
     var sg = store.get(KEY_GAME);
     if (sg && sg.market) {
-      var m1 = String(sg.market).toUpperCase().slice(0, 2);
+      var m1 = normMk(sg.market);
       if (m1) return m1;
     }
 
+    // 3) 页面路径 es-ar / en-us → 取地区部分
     try {
       var mm = (location.pathname || '').match(/\/([a-z]{2})-([a-z]{2})(\/|$)/i);
-      if (mm) return (mm[1] + mm[2]).toUpperCase().slice(0, 2);
+      if (mm) {
+        var m2 = normMk(mm[2]);
+        if (m2) return m2;
+      }
     } catch (e) {}
 
-    var mk = targetMarket();
+    // 4) targetMarket 兜底
+    var mk = normMk(targetMarket());
     return mk || 'US';
+  }
+
+  /** 把各种写法归一成两位市场码：en-US/en_US/ENUS/US/us → US */
+  function normMk(v) {
+    if (!v) return '';
+    var s = String(v).toUpperCase().replace(/[^A-Z]/g, '');
+    if (!s) return '';
+
+    // 已知市场表
+    var KNOWN = {
+      AR:1, US:1, JP:1, TR:1, NG:1, BR:1, MX:1, CO:1, CL:1, PE:1, RU:1, UA:1,
+      KZ:1, IN:1, ID:1, MY:1, TH:1, VN:1, PH:1, EG:1, ZA:1, SA:1, AE:1, PL:1,
+      HU:1, CZ:1, SK:1, RO:1, BG:1, GR:1, PT:1, ES:1, IT:1, DE:1, FR:1, NL:1,
+      BE:1, AT:1, CH:1, SE:1, NO:1, DK:1, FI:1, IE:1, GB:1, CA:1, AU:1, NZ:1,
+      SG:1, HK:1, TW:1, KR:1, CN:1, IL:1, QA:1, KW:1, EN:1
+    };
+
+    if (s.length === 2) {
+      if (s === 'EN') return 'US';       // 语言码兜底成 US
+      return KNOWN[s] ? s : '';
+    }
+    // 4 字母：ENUS / ESAR → 后两位优先
+    if (s.length === 4) {
+      var tail = s.slice(2);
+      if (KNOWN[tail] && tail !== 'EN') return tail;
+      var head = s.slice(0, 2);
+      if (KNOWN[head] && head !== 'EN') return head;
+    }
+    // 其他长度：找已知市场
+    for (var k in KNOWN) {
+      if (s.indexOf(k) >= 0 && k !== 'EN') return k;
+    }
+    return '';
   }
 
   /** 当前语言-地区（如 en-us） */
@@ -3041,7 +3081,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v3.3.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v3.3.1', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -3123,5 +3163,5 @@
     return _origDel(k);
   };
 
-  log("v3.3.0 injected (gift-code build)");
+  log("v3.3.1 injected (gift-code build)");
 })();
