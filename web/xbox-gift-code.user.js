@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组代付 → 送礼取码
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      1.1.0
+// @version      1.1.1
 // @description  对当前游戏发起送礼，主号批准付款，产物为可兑换的数字码
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -568,10 +568,15 @@
   // ============================================================
   var panel = null;
 
+  /**
+   * 面板显示条件
+   * 付款页是唯一能读到 __STORE_CART_STATE__ 的地方，
+   * 必须显示面板，否则用户看不到状态、也没法调试。
+   * 只排除真正的 iframe（buynow 的 document POST 落在子 frame 里）。
+   */
   function shouldShow() {
     try {
       if (window.top !== window.self) return false;
-      if (isPayUrl()) return false;
       return true;
     } catch (e) { return false; }
   }
@@ -593,7 +598,7 @@
 
     panel.innerHTML =
       '<div id="xgc-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼 v1.1.0</b>' + tag + '</span>' +
+        '<span><b>Xbox 送礼 v1.1.1</b>' + tag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span>' +
         '<span id="xgc-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
@@ -674,7 +679,7 @@
     panel.querySelector('#xgc-qty').value = c.qty || 1;
 
     refresh();
-    addLog('v1.1.0 注入 · ' + location.host + ' · 角色=' + role());
+    addLog('v1.1.1 注入 · ' + location.host + ' · 角色=' + role());
   }
 
   function refresh() {
@@ -720,6 +725,15 @@
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', build);
   else setTimeout(build, 0);
+
+  // 环境诊断：确认脚本真的跑起来了
+  setTimeout(function () {
+    var P = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
+    var hasState = !!(P.__STORE_CART_STATE__);
+    addLog('环境 · top=' + (window.top === window.self ? '主窗口' : 'iframe') +
+           ' · __STORE_CART_STATE__=' + (hasState ? '有' : '无') +
+           ' · body=' + (!!document.body));
+  }, 1500);
 
   setTimeout(function () { if (lic()) checkLic(); }, 900);
 
