@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.0.0
+// @version      3.0.1
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v3.0.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v3.0.1</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -2412,7 +2412,16 @@
       }
     }
 
-    // ---- 4) 确保 isGift / giftee ----
+    // ---- 4) 删掉 cartId ----
+    // 关键：这个 cartId 指向页面按 parentApproval 建的 cart，
+    // 带着它再以 isGift:true 建新 cart → HTTP 400。
+    // 成功案例的请求里根本没有 cartId 字段。
+    if (o.cartId !== undefined) {
+      changed.push('删除 cartId ' + String(o.cartId).slice(0, 8));
+      delete o.cartId;
+    }
+
+    // ---- 5) 确保 isGift / giftee ----
     if (!o.isGift) { o.isGift = true; changed.push('isGift'); }
     if (!o.buyNowScenario) { o.buyNowScenario = 'gift'; changed.push('buyNowScenario'); }
 
@@ -2897,7 +2906,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v3.0.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v3.0.1', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2979,5 +2988,5 @@
     return _origDel(k);
   };
 
-  log("v3.0.0 injected (gift-code build)");
+  log("v3.0.1 injected (gift-code build)");
 })();
