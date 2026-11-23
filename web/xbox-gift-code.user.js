@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.5.0
+// @version      2.6.0
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v2.5.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v2.6.0</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -750,6 +750,36 @@
   var autoBuildTried = false;   // 防止重复建 cart（提到顶部避免 TDZ）
   var KEY_GCART = 'xfg_giftCart';
 
+  // ---- 可 Gift 档位缓存 ----
+  var giftAvailCache = {};   // productId|sku|market -> {availabilityId,...}
+
+  /** 向服务端查可 Gift 的 availabilityId */
+  function fetchGiftAvail(productId, skuId, mk) {
+    var key = productId + '|' + (skuId || '0010') + '|' + mk;
+    if (giftAvailCache[key]) return Promise.resolve(giftAvailCache[key]);
+
+    return fetch(SERVER_BASE + '/api/gift-avail', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'omit',
+      body: JSON.stringify({ productId: productId, skuId: skuId || '0010', market: mk })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.ok || !j.found || !j.data) {
+          var why = (j && (j.error || j.error)) || '未找到可 Gift 档位';
+          log('[giftAvail] ' + productId + ' @' + mk + ' → ' + why);
+          panelAdd('⚠️ ' + why);
+          return null;
+        }
+        giftAvailCache[key] = j.data;
+        log('[giftAvail] ' + productId + ' @' + mk + ' → ' + j.data.availabilityId + ' (' + j.data.price + ' ' + j.data.currency + ')');
+        panelAdd('[giftAvail] 可 Gift 档 ' + j.data.availabilityId + ' · ' + j.data.price + ' ' + j.data.currency);
+        return j.data;
+      })
+      .catch(function (e) { log('[giftAvail] 异常 ' + e.message); return null; });
+  }
+
   /** 当前是否在 buynow 付款页 */
   function isPayUrl() {
     try { return /\/store\/purchase\/buynowui\/buynow/i.test(location.href); } catch (e) { return false; }
@@ -955,10 +985,12 @@
       return Promise.resolve(null);
     }
 
+    var gav = giftAvailCache[prod.productId + '|' + (prod.skuId || '0010') + '|' + ctx.market];
+    var useAvail = (gav && gav.availabilityId) || prod.availabilityId || '';
     var item = {
       productId: prod.productId,
       skuId: prod.skuId || '0010',
-      availabilityId: prod.availabilityId || '',
+      availabilityId: useAvail,
       quantity: cfg.qty
     };
     if (!item.availabilityId) { panelAdd('❌ 商品缺 availabilityId'); return Promise.resolve(null); }
@@ -2261,9 +2293,32 @@
     try { arr = JSON.parse(unq(d['products'])); } catch (e) { log('[hard] products 解析失败'); return null; }
     if (!Array.isArray(arr) || !arr.length) return null;
 
-    // 商品 + availabilityId（优先用页面里的，那是当前真实值）
-    var avail = (arr[0] && arr[0].availabilityId) || prod.availabilityId || '';
-    if (!avail) { log('[hard] 缺 availabilityId'); return null; }
+    // ---- 关键：送礼必须用「可 Gift」的档位 ----
+    // 页面里的 availabilityId 是家庭组代付用的（无 Gift），
+    // 直接拿去送礼会 FailedToHydrate / ProductNotFound。
+    var pageAvail = (arr[0] && arr[0].availabilityId) || prod.availabilityId || '';
+    var mk = market();
+    var cached = giftAvailCache[prod.productId + '|' + (prod.skuId || '0010') + '|' + mk];
+    var avail = cached ? cached.availabilityId : '';
+
+    if (!avail) {
+      // 缓存没有 → 同步查一次（用同步 XHR 保证在 hook 内完成）
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', SERVER_BASE + '/api/gift-avail', false);   // 同步
+        xhr.setRequestHeader('content-type', 'application/json');
+        xhr.send(JSON.stringify({ productId: prod.productId, skuId: prod.skuId || '0010', market: mk }));
+        var j = JSON.parse(xhr.responseText || '{}');
+        if (j && j.ok && j.found && j.data) {
+          avail = j.data.availabilityId;
+          giftAvailCache[prod.productId + '|' + (prod.skuId || '0010') + '|' + mk] = j.data;
+          log('[hard] 查到可 Gift 档 ' + avail);
+          panelAdd('[hard] 可 Gift 档 → ' + avail + '（页面原档 ' + pageAvail + ' 无 Gift）');
+        }
+      } catch (e) { log('[hard] 同步查 gift-avail 失败: ' + e.message); }
+    }
+
+    if (!avail) { log('[hard] 拿不到可 Gift 档位，放弃转送礼'); panelAdd('❌ 该商品没有可 Gift 档位'); return null; }
 
     var item = { productId: prod.productId, skuId: prod.skuId || '0010', availabilityId: avail };
     if (gc.qty > 1) item.quantity = gc.qty;
@@ -2727,7 +2782,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v2.5.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v2.6.0', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2769,7 +2824,11 @@
     autoBuildTried = true;
     log('[auto] context 就绪 → 自动建 gift cart');
     panelAdd('[auto] 自动建 gift cart…');
-    prepareGiftCart();
+
+    // 先查可 Gift 档位，再建 cart
+    fetchGiftAvail(prod.productId, prod.skuId, ctx.market)
+      .then(function () { return prepareGiftCart(); })
+      .catch(function (e) { log('[auto] 预查失败', e); prepareGiftCart(); });
   }
 
   // 付款页：轮询等 context，就绪即自动建
@@ -2805,5 +2864,5 @@
     return _origDel(k);
   };
 
-  log("v2.5.0 injected (gift-code build)");
+  log("v2.6.0 injected (gift-code build)");
 })();
