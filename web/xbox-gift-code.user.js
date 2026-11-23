@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.8.0
+// @version      2.9.0
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v2.8.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v2.9.0</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -966,7 +966,12 @@
         locale: ac.locale || 'en-us',
         campaignId: ac.campaignId || '',
         scenario: ac.scenario || '',
-        callerApplicationId: ac.callerApplicationId || ''
+        callerApplicationId: ac.callerApplicationId || '',
+        lcid: ac.lcid || 0,
+        experiments: Array.isArray(ac.experiments) ? ac.experiments : [],
+        deviceFamily: ac.deviceFamily || 'Web',
+        muid: ac.muid || '',
+        clientIp: ac.clientIP || ''
       };
     } catch (e) { return null; }
   }
@@ -992,14 +997,18 @@
       skuId: prod.skuId || '0010',
       availabilityId: useAvail,
       quantity: cfg.qty,
-      campaignId: ctx.campaignId || 'xboxcomct'    // 必需：缺它可 Gift 档会 ProductNotFound
+      campaignId: 'xboxcomct'    // 固定：可 Gift 档依赖它，不能靠 ctx（家庭组入口没有这个字段）
     };
     if (!item.availabilityId) { panelAdd('❌ 商品缺 availabilityId'); return Promise.resolve(null); }
 
     var body = {
       friendlyName: null,
       market: ctx.market,
-      locale: (String(ctx.market).toUpperCase() === 'US' ? 'en-US' : ctx.locale),
+      locale: (function () {
+        var mk = String(ctx.market || 'US').toUpperCase();
+        var map = { US:'en-US', AR:'es-AR', TR:'tr-TR', BR:'pt-BR', MX:'es-MX', JP:'ja-JP', GB:'en-GB', DE:'de-DE' };
+        return map[mk] || 'en-US';
+      })(),
       catalogClientType: '',
       riskSessionId: ctx.riskId,
       testScenarios: 'None',
@@ -1020,6 +1029,8 @@
     };
 
     panelAdd('[gift] PrepareCheckout ' + item.productId + ' x' + cfg.qty + ' → ' + cfg.email);
+    panelAdd('[gift] item=' + JSON.stringify(item));
+    panelAdd('[gift] market=' + body.market + ' locale=' + body.locale + ' risk=' + String(ctx.riskId).slice(0, 8));
 
     var headers = {
       'content-type': 'application/json',
@@ -2806,7 +2817,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v2.8.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v2.9.0', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2888,5 +2899,5 @@
     return _origDel(k);
   };
 
-  log("v2.8.0 injected (gift-code build)");
+  log("v2.9.0 injected (gift-code build)");
 })();
