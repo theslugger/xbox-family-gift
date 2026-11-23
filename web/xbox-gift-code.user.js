@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.0.1
+// @version      2.1.0
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v2.0.1</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v2.1.0</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -407,6 +407,18 @@
           'font:11px/1.4 ui-monospace,Menlo,monospace;color:#9c9;white-space:pre-wrap"></div>' +
         giftRows +
         tip +
+        (role === 'child'
+          ? '<div style="margin-top:6px;display:flex;gap:6px">' +
+              '<button id="xfg-pairNew" style="flex:1;padding:6px;background:#1a2a3a;color:#9cf;border:1px solid #265;border-radius:6px;cursor:pointer">生成配对码</button>' +
+            '</div>'
+          : role === 'parent'
+          ? '<div style="margin-top:6px;display:flex;gap:6px">' +
+              '<button id="xfg-pairJoin" style="flex:1;padding:6px;background:#2a2a1a;color:#ff9;border:1px solid #553;border-radius:6px;cursor:pointer">输入子号的配对码</button>' +
+            '</div>'
+          : '<div style="margin-top:6px;display:flex;gap:6px">' +
+              '<button id="xfg-pairNew" style="flex:1;padding:5px;background:#1a2a3a;color:#9cf;border:1px solid #265;border-radius:6px;cursor:pointer">生成配对码</button>' +
+              '<button id="xfg-pairJoin" style="flex:1;padding:5px;background:#2a2a1a;color:#ff9;border:1px solid #553;border-radius:6px;cursor:pointer">输入配对码</button>' +
+            '</div>') +
         '<div style="margin-top:6px;display:flex;gap:6px">' +
           '<button id="xfg-lic" style="flex:1;padding:5px;background:#2a1a3a;color:#c8f;border:1px solid #536;border-radius:6px;cursor:pointer">授权</button>' +
           '<button id="xfg-refresh" style="flex:0 0 60px;padding:5px;background:#1a2f3a;color:#9cf;border:1px solid #265;border-radius:6px;cursor:pointer">刷新</button>' +
@@ -442,6 +454,12 @@
     var bBuild = panelEl.querySelector('#xfg-gbuild');
     if (bSave) bSave.addEventListener('click', saveGiftCfg);
     if (bBuild) bBuild.addEventListener('click', function () { prepareGiftCart(); });
+
+    // 配对码按钮
+    var bPN = panelEl.querySelector('#xfg-pairNew');
+    var bPJ = panelEl.querySelector('#xfg-pairJoin');
+    if (bPN) bPN.addEventListener('click', createPair);
+    if (bPJ) bPJ.addEventListener('click', joinPair);
 
     var gc0 = giftCfg();
     if (gc0.email) { var e0 = panelEl.querySelector('#xfg-email'); if (e0) e0.value = gc0.email; }
@@ -590,10 +608,23 @@
     if (!g && !t) return;
 
     var body = { code: code, pairId: pid };
-    if (g && g.productId) body.game = { productId: g.productId, skuId: g.skuId || '0010', availabilityId: g.availabilityId || '', market: g.market || '' };
-    if (t && t.productId) body.iap = { productId: t.productId, skuId: t.skuId || '0010', availabilityId: t.availabilityId || '', market: t.market || '' };
-    var mk = resolvePlanMarket(g, t);
-    if (mk) body.market = mk;
+
+    // 当前商品（不再需要 ①②，直接同步页面商品）
+    var prod = currentProduct();
+    if (prod && prod.productId) {
+      body.game = {
+        productId: prod.productId,
+        skuId: prod.skuId || '0010',
+        availabilityId: prod.availabilityId || '',
+        market: market() || ''
+      };
+    }
+
+    // 送礼配置（主号要拿到才能建 cart）
+    var gc = giftCfg();
+    if (gc.email) {
+      body.giftCfg = { email: gc.email, sender: gc.sender, qty: gc.qty };
+    }
 
     fetch(SERVER_BASE + '/api/share', {
       method: 'POST',
@@ -636,6 +667,31 @@
           store.set(KEY_IAP, j.data.iap); changed = true;
           log('[share] ← 同步 ② 内购 ' + j.data.iap.productId);
         }
+
+        // 送礼配置
+        if (j.data.giftCfg && j.data.giftCfg.email) {
+          var curGc = giftCfg();
+          if (curGc.email !== j.data.giftCfg.email || curGc.qty !== j.data.giftCfg.qty) {
+            store.set(KEY_GC, {
+              email: j.data.giftCfg.email,
+              sender: j.data.giftCfg.sender || 'Gift',
+              qty: j.data.giftCfg.qty || 1
+            });
+            changed = true;
+            log('[share] ← 同步送礼: ' + j.data.giftCfg.email + ' x' + j.data.giftCfg.qty);
+            panelAdd('✅ 已同步送礼配置 → ' + j.data.giftCfg.email);
+
+            // 回填输入框
+            if (panelEl) {
+              var ee = panelEl.querySelector('#xfg-email');
+              var ss = panelEl.querySelector('#xfg-sender');
+              var qq = panelEl.querySelector('#xfg-qty');
+              if (ee) ee.value = j.data.giftCfg.email;
+              if (ss) ss.value = j.data.giftCfg.sender || 'Gift';
+              if (qq) qq.value = j.data.giftCfg.qty || 1;
+            }
+          }
+        }
         if (changed) {
           var g2 = store.get(KEY_GAME), t2 = store.get(KEY_IAP);
           if (g2 && t2 && g2.productId && t2.productId) {
@@ -662,6 +718,7 @@
   // 4) patchBuynow     把表单转成 scenario=gift
   // ============================================================
   var KEY_GC = 'xfg_giftCfg';
+  var autoBuildTried = false;   // 防止重复建 cart（提到顶部避免 TDZ）
   var KEY_GCART = 'xfg_giftCart';
 
   function giftCfg() {
@@ -683,7 +740,11 @@
     }
     store.set(KEY_GC, { email: email, sender: sender, qty: qty });
     panelAdd('✅ 送礼设置已保存 · ' + email + ' x' + qty);
+    try { pushShare(); } catch (e) {}
     refreshPanel();
+
+    // 如果 context 已经可用（付款页），保存后立刻建 cart
+    setTimeout(function () { try { tryAutoBuild(); } catch (e) {} }, 300);
     return true;
   }
 
@@ -2516,7 +2577,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v2.0.1', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v2.1.0', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2537,29 +2598,46 @@
              ' · 商品=' + (pr ? pr.productId + '(' + pr.source + ')' : '未识别'));
   }, 1500);
 
-  // 付款页：context 就绪后自动建 gift cart
+  // ============================================================
+  // 自动建 gift cart
+  // ------------------------------------------------------------
+  // 付款页 context 一就绪就自动执行，不需要手点按钮。
+  // 条件：有收码邮箱 + 有商品 + 还没有 cart
+  // ============================================================
+  function tryAutoBuild() {
+    if (autoBuildTried) return;
+    var gc = giftCfg();
+    if (!gc.email) return;                 // 没邮箱就不建
+    if (giftCart.id) return;               // 已有就不重复
+    var ctx = pageCtx();
+    if (!ctx || !ctx.riskId || !ctx.xToken) return;   // context 还没准备好
+    var prod = currentProduct();
+    if (!prod) return;
+
+    autoBuildTried = true;
+    log('[auto] context 就绪 → 自动建 gift cart');
+    panelAdd('[auto] 自动建 gift cart…');
+    prepareGiftCart();
+  }
+
+  // 付款页：轮询等 context，就绪即自动建
   if (isPayUrl()) {
-    setTimeout(function () {
-      var tries = 0;
-      var t = setInterval(function () {
-        tries++;
-        var ctx = pageCtx();
-        if (ctx && ctx.riskId) {
-          clearInterval(t);
-          var gc = giftCfg();
-          if (gc.email && !giftCart.id) {
-            log('[pay] context 就绪 → 自动建 gift cart');
-            prepareGiftCart();
-          } else if (giftCart.id) {
-            panelAdd('[pay] 已有 gift cart: ' + giftCart.id.slice(0, 8));
-          } else {
-            panelAdd('[pay] 未设收码邮箱，保持家庭组代付');
-          }
-        } else if (tries > 25) {
-          clearInterval(t);
-          panelAdd('⚠️ 20 秒内未拿到页面 context');
-        }
-      }, 800);
+    var payTries = 0;
+    var payTimer = setInterval(function () {
+      payTries++;
+      tryAutoBuild();
+      if (autoBuildTried || payTries > 40) {
+        clearInterval(payTimer);
+        if (!autoBuildTried) panelAdd('⚠️ 30 秒内未就绪（检查收码邮箱/商品/context）');
+      }
+    }, 800);
+  } else {
+    // 商品页：也试着建（部分页面有 context）
+    var tries2 = 0;
+    var t2 = setInterval(function () {
+      tries2++;
+      tryAutoBuild();
+      if (autoBuildTried || tries2 > 10) clearInterval(t2);
     }, 1000);
   }
 
@@ -2575,5 +2653,5 @@
     return _origDel(k);
   };
 
-  log("v2.0.1 injected (gift-code build)");
+  log("v2.1.0 injected (gift-code build)");
 })();
