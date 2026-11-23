@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.0.0
+// @version      2.0.1
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v2.0.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v2.0.1</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -740,11 +740,23 @@
       }
     } catch (e) {}
 
+    // ---- URL 兜底（ID 可能是小写，必须 /i）----
     var u = location.href;
-    var m = u.match(/\/store\/(?:apps|pdp|games)\/[^/]*\/([A-Z0-9]{12})\b/i) ||
-            u.match(/\/p\/([A-Z0-9]{12})\b/i) ||
-            u.match(/\b([A-Z0-9]{12})\b/);
-    if (m) return { productId: m[1].toUpperCase(), skuId: '0010', availabilityId: '', source: 'url' };
+    var cands = [
+      /\/(?:games\/)?store\/[^/]*\/([a-z0-9]{12})(?:[?#/]|$)/i,   // /games/store/slug/ID
+      /\/store\/(?:apps|pdp|games)\/[^/]*\/([a-z0-9]{12})(?:[?#/]|$)/i,
+      /\/p\/([a-z0-9]{12})(?:[?#/]|$)/i,                          // /p/ID
+      /\/([a-z0-9]{12})(?:[?#/]|$)/i,                              // /ID 结尾
+      /\b([a-z0-9]{12})\b/i                                      // 任意 12 位
+    ];
+    for (var ci = 0; ci < cands.length; ci++) {
+      var mm = u.match(cands[ci]);
+      if (!mm) continue;
+      var pid = mm[1].toUpperCase();
+      // 排除纯数字（时间戳等）和纯字母（单词）
+      if (!/[0-9]/.test(pid) || !/[A-Z]/.test(pid)) continue;
+      return { productId: pid, skuId: '0010', availabilityId: '', source: 'url' };
+    }
     return null;
   }
 
@@ -2504,7 +2516,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v2.0.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v2.0.1', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2563,5 +2575,5 @@
     return _origDel(k);
   };
 
-  log("v2.0.0 injected (gift-code build)");
+  log("v2.0.1 injected (gift-code build)");
 })();
