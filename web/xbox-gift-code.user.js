@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.7.0
+// @version      2.8.0
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v2.7.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v2.8.0</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -991,15 +991,15 @@
       productId: prod.productId,
       skuId: prod.skuId || '0010',
       availabilityId: useAvail,
-      quantity: cfg.qty
+      quantity: cfg.qty,
+      campaignId: ctx.campaignId || 'xboxcomct'    // 必需：缺它可 Gift 档会 ProductNotFound
     };
     if (!item.availabilityId) { panelAdd('❌ 商品缺 availabilityId'); return Promise.resolve(null); }
-    if (ctx.campaignId) item.campaignId = ctx.campaignId;
 
     var body = {
       friendlyName: null,
       market: ctx.market,
-      locale: ctx.locale,
+      locale: (String(ctx.market).toUpperCase() === 'US' ? 'en-US' : ctx.locale),
       catalogClientType: '',
       riskSessionId: ctx.riskId,
       testScenarios: 'None',
@@ -2333,7 +2333,8 @@
       gifteeEmail: qq(gc.email),
       gifteeSenderName: qq(gc.sender)
     };
-    if (giftCart.id) set.cartId = giftCart.id;
+    // 注意：PrepareCheckout 建新 cart 时不带 cartId（会与新建冲突）
+    // cartId 只在 buynow 表单里用，指向刚建的 cart
 
     var changed = 0;
     var out = bodyStr.split('&').map(function (p) {
@@ -2562,7 +2563,7 @@
           var sx = new XMLHttpRequest();
           sx.open('POST', SERVER_BASE + '/api/gift-avail', false);
           sx.setRequestHeader('content-type', 'application/json');
-          sx.send(JSON.stringify({ productId: prod.productId, skuId: prod.skuId || '0010', market: mkForGift }));
+          sx.send(JSON.stringify({ productId: prod.productId, skuId: prod.skuId || '0010', market: mkForGift }));   // gift-avail 不需要 campaignId
           var sj = JSON.parse(sx.responseText || '{}');
           if (sj && sj.ok && sj.found && sj.data) {
             avail = sj.data.availabilityId;
@@ -2805,7 +2806,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v2.7.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v2.8.0', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2887,5 +2888,5 @@
     return _origDel(k);
   };
 
-  log("v2.7.0 injected (gift-code build)");
+  log("v2.8.0 injected (gift-code build)");
 })();
