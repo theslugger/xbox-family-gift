@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.3.1
+// @version      3.3.2
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v3.3.1</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v3.3.2</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -648,7 +648,7 @@
         productId: prod.productId,
         skuId: prod.skuId || '0010',
         availabilityId: prod.availabilityId || '',
-        market: market() || ''
+        market: normMk(market()) || ''
       };
     }
 
@@ -699,7 +699,9 @@
         var changed = false;
 
         if (j.data.game && j.data.game.productId && (!g || g.productId !== j.data.game.productId)) {
-          store.set(KEY_GAME, j.data.game); changed = true;
+          var gg = Object.assign({}, j.data.game);
+          gg.market = normMk(gg.market) || normMk(market()) || 'US';
+          store.set(KEY_GAME, gg); changed = true;
           log('[share] ← 同步商品 ' + j.data.game.productId + '/' + j.data.game.availabilityId);
           panelAdd('[share] ← 同步商品 ' + j.data.game.productId);
         }
@@ -777,9 +779,20 @@
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (!j || !j.ok || !j.found || !j.data) {
-          var why = (j && (j.error || j.error)) || '未找到可 Gift 档位';
+          var why = (j && j.error) || '未找到可 Gift 档位';
           log('[giftAvail] ' + productId + ' @' + mk + ' → ' + why);
-          panelAdd('⚠️ ' + why);
+          panelAdd('❌ ' + why);
+          panelAdd('❌ 这个商品不能送礼，请换一个支持 Gift 的游戏');
+
+          // 列出有价档位供判断
+          var cands = (j && j.candidates) || [];
+          if (cands.length) {
+            cands.slice(0, 3).forEach(function (c) {
+              panelAdd('   档位 ' + c.availabilityId + ' · ' + c.price + ' ' + c.currency +
+                       ' · ' + (c.actions || []).join(','));
+            });
+          }
+          toast('❌ 该商品不支持送礼', why, '请换一个游戏');
           return null;
         }
         giftAvailCache[key] = j.data;
@@ -3081,7 +3094,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v3.3.1', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v3.3.2', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -3163,5 +3176,5 @@
     return _origDel(k);
   };
 
-  log("v3.3.1 injected (gift-code build)");
+  log("v3.3.2 injected (gift-code build)");
 })();
