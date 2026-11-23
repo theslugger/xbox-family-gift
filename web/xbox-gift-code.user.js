@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.2.0
+// @version      2.2.1
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v2.2.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v2.2.1</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -560,7 +560,16 @@
     })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        if (!j || !j.ok) { panelAdd('❌ 生成失败: ' + ((j && j.error) || '?')); return; }
+        if (!j || !j.ok) {
+          // 429 自动重试一次
+          if (j && j.retryAfter) {
+            panelAdd('⏳ 限流中，' + j.retryAfter + ' 秒后自动重试…');
+            setTimeout(function () { createPair(); }, Math.min(j.retryAfter * 1000 + 500, 15000));
+            return;
+          }
+          panelAdd('❌ 生成失败: ' + ((j && j.error) || '?'));
+          return;
+        }
         setPairId(j.data.pairId);
         panelAdd('🔑 配对码 ' + j.data.pairId + ' · ' + Math.round(j.data.expiresIn / 60) + ' 分钟内有效');
         notify('配对码已生成', j.data.pairId, '把这个数字告诉主号，让它在主号窗口输入');
@@ -589,7 +598,29 @@
     })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        if (!j || !j.ok) { panelAdd('❌ 加入失败: ' + ((j && j.error) || '?')); return; }
+        if (!j || !j.ok) {
+          if (j && j.retryAfter) {
+            panelAdd('⏳ 限流中，' + j.retryAfter + ' 秒后自动重试…');
+            setTimeout(function () {
+              fetch(SERVER_BASE + '/api/pair/join', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                credentials: 'omit',
+                body: JSON.stringify({ code: shareCode(), pairId: id })
+              }).then(function (r) { return r.json(); }).then(function (j2) {
+                if (j2 && j2.ok) {
+                  setPairId(j2.data.pairId);
+                  panelAdd('✅ 已加入配对 ' + j2.data.pairId);
+                  try { pullShare(true); } catch (e) {}
+                  refreshPanel();
+                } else panelAdd('❌ 重试仍失败');
+              });
+            }, Math.min(j.retryAfter * 1000 + 500, 15000));
+            return;
+          }
+          panelAdd('❌ 加入失败: ' + ((j && j.error) || '?'));
+          return;
+        }
         setPairId(j.data.pairId);
         panelAdd('✅ 已加入子号配对 ' + j.data.pairId + '（组内 ' + j.data.members + ' 个窗口）');
         notify('配对成功', '配对码 ' + j.data.pairId, '正在拉取子号抓的 ①②');
@@ -2587,7 +2618,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v2.2.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v2.2.1', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2665,5 +2696,5 @@
     return _origDel(k);
   };
 
-  log("v2.2.0 injected (gift-code build)");
+  log("v2.2.1 injected (gift-code build)");
 })();
