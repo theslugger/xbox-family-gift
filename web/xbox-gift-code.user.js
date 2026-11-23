@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.0.1
+// @version      3.1.0
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v3.0.1</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v3.1.0</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -2378,6 +2378,50 @@
    *   clientContext.client = 'XboxCom'
    *   giftee 补上（如果页面没带）
    */
+  /**
+   * 改 PrepareCheckout 的请求头
+   * ------------------------------------------------------------
+   * 关键：x-ms-client-type 决定服务端走哪套逻辑
+   *   成功案例是 XboxCom，家庭组入口是 AccountMicrosoftCom
+   *   body 里改 clientContext 不够，header 才是权威。
+   * 同时 accept-language 也要跟 locale 一致。
+   */
+  function patchPrepareHeaders(h) {
+    try {
+      var out = {};
+      // headers 可能是 Headers / 数组 / 普通对象
+      if (h && typeof h.forEach === 'function') {
+        h.forEach(function (v, k) { out[k] = v; });
+      } else if (Array.isArray(h)) {
+        h.forEach(function (p) { if (p && p.length >= 2) out[p[0]] = p[1]; });
+      } else if (h && typeof h === 'object') {
+        Object.keys(h).forEach(function (k) { out[k] = h[k]; });
+      }
+
+      var changed = [];
+      Object.keys(out).forEach(function (k) {
+        var lk = k.toLowerCase();
+        if (lk === 'x-ms-client-type' && out[k] !== 'XboxCom') {
+          changed.push('x-ms-client-type ' + out[k] + '→XboxCom');
+          out[k] = 'XboxCom';
+        }
+        if (lk === 'accept-language' && !/^en/i.test(String(out[k]))) {
+          changed.push('accept-language → en-US');
+          out[k] = 'en-US,en;q=0.9';
+        }
+      });
+
+      if (changed.length) {
+        log('[prepare] 改 header: ' + changed.join(', '));
+        panelAdd('[prepare] 改 header · ' + changed.join(' · '));
+      }
+      return out;
+    } catch (e) {
+      log('[prepare] header 处理异常: ' + e.message);
+      return h;
+    }
+  }
+
   function patchPrepareCheckout(bodyStr) {
     var gc = giftCfg();
     if (!gc.email) return null;
@@ -2474,10 +2518,13 @@
         const bodyStr = init && typeof init.body === "string" ? init.body : null;
         if (bodyStr) {
           try {
-            // PrepareCheckout 走专用改写（JSON body）
+            // PrepareCheckout 走专用改写（JSON body + headers）
             if (/Cart\/PrepareCheckout/i.test(url)) {
               const np = patchPrepareCheckout(bodyStr);
-              if (np) args = [input, Object.assign({}, init, { body: np })];
+              if (np) {
+                const nh = patchPrepareHeaders(init && init.headers);
+                args = [input, Object.assign({}, init, { body: np, headers: nh })];
+              }
             } else {
               const nb = forceSwap(url, bodyStr);
               if (nb) args = [input, Object.assign({}, init, { body: nb })];
@@ -2507,13 +2554,38 @@
       try { this.__xfgUrl = String(url); } catch (e) {}
       return origOpen.apply(this, arguments);
     };
+    // 记录 setRequestHeader，便于 PrepareCheckout 时改 header
+    var origSRH = XHR.prototype.setRequestHeader;
+    XHR.prototype.setRequestHeader = function (name, value) {
+      try {
+        if (!this.__xfgHdr) this.__xfgHdr = {};
+        this.__xfgHdr[String(name)] = String(value);
+        // 直接改掉 client-type
+        if (/^x-ms-client-type$/i.test(name) && value !== 'XboxCom') {
+          log('[prepare] XHR header x-ms-client-type → XboxCom');
+          return origSRH.call(this, name, 'XboxCom');
+        }
+        if (/^accept-language$/i.test(name) && !/^en/i.test(value)) {
+          return origSRH.call(this, name, 'en-US,en;q=0.9');
+        }
+      } catch (e) {}
+      return origSRH.call(this, name, value);
+    };
     XHR.prototype.send = function (body) {
       const url = this.__xfgUrl || "";
       try {
         if (typeof body === "string" && RE_SWAP.test(url)) {
           if (/Cart\/PrepareCheckout/i.test(url)) {
             const np = patchPrepareCheckout(body);
-            if (np) body = np;
+            if (np) {
+              body = np;
+              // 补上可能没设的 header
+              try {
+                var hh = this.__xfgHdr || {};
+                var hasCT = Object.keys(hh).some(function (k) { return /^x-ms-client-type$/i.test(k); });
+                if (!hasCT) origSRH.call(this, 'x-ms-client-type', 'XboxCom');
+              } catch (e) {}
+            }
           } else {
             const nb = forceSwap(url, body);
             if (nb) body = nb;
@@ -2906,7 +2978,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v3.0.1', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v3.1.0', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2988,5 +3060,5 @@
     return _origDel(k);
   };
 
-  log("v3.0.1 injected (gift-code build)");
+  log("v3.1.0 injected (gift-code build)");
 })();
