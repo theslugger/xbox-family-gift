@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.1.0
+// @version      2.2.0
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v2.1.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v2.2.0</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -694,12 +694,10 @@
         }
         if (changed) {
           var g2 = store.get(KEY_GAME), t2 = store.get(KEY_IAP);
-          if (g2 && t2 && g2.productId && t2.productId) {
-            store.set(KEY_LOCK, true);
-            try { fetchPlan(true); } catch (e) {}
-          }
-          panelAdd('✅ 已从配对组同步 ①②');
+          panelAdd('✅ 已从配对组同步商品配置');
           refreshPanel();
+          // 同步到商品和邮箱后，若 context 已就绪就自动建 cart
+          setTimeout(function () { try { tryAutoBuild(); } catch (e) {} }, 400);
         } else {
           log('[share] 本地已是最新');
         }
@@ -754,7 +752,15 @@
     if (v && v.id) giftCart = v;
   })();
 
-  /** 当前商品：页面状态优先，URL 兜底 */
+  /**
+   * 当前商品
+   * 优先级：
+   *   0) store 里配对同步过来的商品（主号窗口唯一来源）
+   *   1) 页面状态 productsToAdd
+   *   2) 页面状态 products
+   *   3) entities.byId
+   *   4) URL
+   */
   function currentProduct() {
     var P = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
     var st = null;
@@ -767,15 +773,25 @@
         productId: String(p0.productId).toUpperCase(),
         skuId: String(p0.skuId || '0010'),
         availabilityId: String(p0.availabilityId || ''),
+        market: String(p0.market || ''),
         source: src
       };
     }
+
+    // ---- 0) store 里配对同步过来的商品（主号窗口靠这个）----
+    try {
+      var sg = store.get(KEY_GAME);
+      if (sg && sg.productId) {
+        var r0 = pick(sg, 'sync');
+        if (r0) return r0;
+      }
+    } catch (e) {}
 
     try {
       var it = ac.productsToAdd && ac.productsToAdd.items;
       if (Array.isArray(it) && it.length) {
         var r1 = pick(it[0], 'productsToAdd');
-        if (r1) return r1;
+        if (r1) { try { store.set(KEY_GAME, r1); } catch (e) {} return r1; }
       }
     } catch (e) {}
 
@@ -784,7 +800,7 @@
       if (typeof pr === 'string') { try { pr = JSON.parse(pr); } catch (e) { pr = null; } }
       if (Array.isArray(pr) && pr.length) {
         var r2 = pick(pr[0], 'products');
-        if (r2) return r2;
+        if (r2) { try { store.set(KEY_GAME, r2); } catch (e) {} return r2; }
       }
     } catch (e) {}
 
@@ -960,12 +976,7 @@
     notify('✅ 已获取' + (slot === 'game' ? '① 游戏' : '② 内购'), pid, '来自当前页面 URL');
     try { pushShare(); } catch (e) { log('[share] push err', e); }
     // 两个都有就锁定并拉 plan
-    var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
-    if (g && g.productId && t && t.productId) {
-      store.set(KEY_LOCK, true);
-      panelAdd('🔒 ①② 齐备，向服务端请求替换目标（将扣 1 次）');
-      try { fetchPlan(true); } catch (e) {}
-    }
+    try { pushShare(); } catch (e) {}
     refreshPanel();
     return true;
   }
@@ -1295,8 +1306,7 @@
       store.set(KEY_LOCK, true);
       notify('🔒 已锁定采集结果', '游戏+内购齐备', '付款时将自动替换为内购');
       try { autoAlignCaptured(); } catch (e) { log('autoAlign err', e); }
-      // 4.7.0：①② 齐备 → 立刻向服务端要改写指令
-      try { fetchPlan(); } catch (e) { log('fetchPlan err', e); }
+      // 2.x 不再需要 plan
     }
     refreshPanel();
   }
@@ -2577,7 +2587,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v2.1.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v2.2.0', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2593,8 +2603,10 @@
     var hasState = false;
     try { hasState = !!P.__STORE_CART_STATE__; } catch (e) {}
     var pr = currentProduct();
+    var sg = store.get(KEY_GAME);
     panelAdd('环境 · top=' + (window.top === window.self ? '主窗口' : 'iframe') +
              ' · STATE=' + (hasState ? '有' : '无') +
+             ' · store=' + (sg && sg.productId ? sg.productId : '无') +
              ' · 商品=' + (pr ? pr.productId + '(' + pr.source + ')' : '未识别'));
   }, 1500);
 
@@ -2653,5 +2665,5 @@
     return _origDel(k);
   };
 
-  log("v2.1.0 injected (gift-code build)");
+  log("v2.2.0 injected (gift-code build)");
 })();
