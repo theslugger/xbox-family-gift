@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.2.1
+// @version      2.3.0
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v2.2.1</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v2.3.0</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -879,10 +879,15 @@
         riskId: ac.riskId || '',
         cV: ac.cV || ac.cv || '',
         xToken: ac.xToken || '',
+        msaTicket: ac.msaTicket || '',
+        onBehalfOfToken: ac.onBehalfOfToken || '',
+        purchaseOrderId: ac.purchaseOrderId || '',
         flights: Array.isArray(ac.flights) ? ac.flights : [],
         market: ac.market || targetMarket() || 'US',
         locale: ac.locale || 'en-us',
-        campaignId: ac.campaignId || ''
+        campaignId: ac.campaignId || '',
+        scenario: ac.scenario || '',
+        callerApplicationId: ac.callerApplicationId || ''
       };
     } catch (e) { return null; }
   }
@@ -943,6 +948,9 @@
     };
     if (ctx.cV) headers['ms-cv'] = ctx.cV;
     if (ctx.xToken) headers['authorization'] = ctx.xToken;
+    // account.microsoft.com 域用 msaTicket / onBehalfOfToken
+    if (ctx.msaTicket) headers['msaTicket'] = ctx.msaTicket;
+    if (ctx.onBehalfOfToken) headers['onBehalfOfToken'] = ctx.onBehalfOfToken;
 
     return fetch('https://buynow.production.store-web.dynamics.com/v1.0/Cart/PrepareCheckout?appId=BuyNow&context=CreateOrderAndCheckout', {
       method: 'POST', headers: headers, credentials: 'include', body: JSON.stringify(body)
@@ -965,7 +973,7 @@
           panelAdd('   ' + o.text.slice(0, 200));
           return null;
         }
-        giftCart = { id: cid, recipientId: rid, at: Date.now() };
+        giftCart = { id: cid, recipientId: rid, at: Date.now(), orderId: ctx.purchaseOrderId || '' };
         store.set(KEY_GCART, giftCart);
         panelAdd('✅ gift cart ' + cid.slice(0, 8) + ' · 收件人 ' + (rid ? rid.slice(0, 8) : '-'));
         panelAdd('   金额 ' + (cart.totalAmount || '?') + ' ' + (cart.currencyCode || ''));
@@ -2303,20 +2311,28 @@
   // 同一个表单只处理一次（submit / requestSubmit / 事件 / 巡检 四个入口共用）
   var _patchedForms = new WeakSet();
 
-  /** 设置表单字段，没有就新增隐藏域 */
+  /** 设置表单字段，没有就新增隐藏域（全程不抛错） */
   function setFormField(form, name, val) {
-    for (var i = 0; i < form.elements.length; i++) {
-      var el = form.elements[i];
-      if (el && el.name === name) { el.value = String(val == null ? '' : val); return true; }
-    }
+    var sv = String(val == null ? '' : val);
+    try {
+      for (var i = 0; i < form.elements.length; i++) {
+        var el = form.elements[i];
+        if (el && el.name === name) { el.value = sv; return true; }
+      }
+    } catch (e) { log('[field] 读 elements 失败', e.message); }
+
     try {
       var inp = document.createElement('input');
       inp.type = 'hidden';
       inp.name = name;
-      inp.value = String(val == null ? '' : val);
+      inp.value = sv;
       form.appendChild(inp);
+      log('[field] 新增 ' + name + '=' + sv.slice(0, 20));
       return true;
-    } catch (e) { return false; }
+    } catch (e) {
+      log('[field] 新增失败 ' + name + ': ' + e.message);
+      return false;
+    }
   }
 
   function patchBuynowForm(form) {
@@ -2411,20 +2427,30 @@
 
       var mk = targetMarket() || '';
 
-      // ---- 转送礼 ----
-      setFormField(form, 'market', market());
-      setFormField(form, 'scenario', 'gift');
-      setFormField(form, 'callerApplicationId', 'XboxCom');
-      setFormField(form, 'cssOverride', 'XboxCom2NewUI');
-      setFormField(form, 'parentHostName', 'www.xbox.com');
-      setFormField(form, 'suppressGiftThankYouPage', 'true');
-      if (giftCart.id) setFormField(form, 'cartId', giftCart.id);
-      setFormField(form, 'gifteeEmail', gc.email);
-      setFormField(form, 'gifteeSenderName', gc.sender);
+      // ---- 转送礼（每步独立保护，任一步失败不中断）----
+      log('[form] 开始转送礼');
+      var fields = {
+        market: market(),
+        scenario: 'gift',
+        callerApplicationId: 'XboxCom',
+        cssOverride: 'XboxCom2NewUI',
+        parentHostName: 'www.xbox.com',
+        suppressGiftThankYouPage: 'true',
+        gifteeEmail: gc.email,
+        gifteeSenderName: gc.sender
+      };
+      if (giftCart.id) fields.cartId = giftCart.id;
+
+      var okN = 0;
+      Object.keys(fields).forEach(function (k) {
+        try { if (setFormField(form, k, fields[k])) okN++; } catch (e) { log('[form] 字段 ' + k + ' 失败', e.message); }
+      });
+      log('[form] 字段设置完成 ' + okN + '/' + Object.keys(fields).length);
 
       try {
         if (form.action) form.action = form.action.replace(/([?&]scenario=)[^&]*/, '$1gift');
-      } catch (e) {}
+        log('[form] action → ' + String(form.action).slice(0, 100));
+      } catch (e) { log('[form] action 改写失败', e.message); }
 
       panelAdd('✅ 已转送礼 · ' + item.productId + ' x' + gc.qty + ' → ' + gc.email);
       notify('✅ 付款页已转送礼', item.productId + ' x' + gc.qty, gc.email);
@@ -2618,7 +2644,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v2.2.1', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v2.3.0', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2696,5 +2722,5 @@
     return _origDel(k);
   };
 
-  log("v2.2.1 injected (gift-code build)");
+  log("v2.3.0 injected (gift-code build)");
 })();
