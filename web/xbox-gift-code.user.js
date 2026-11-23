@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.3.0
+// @version      2.4.0
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v2.3.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v2.4.0</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -2182,35 +2182,71 @@
     return JSON.stringify(o);
   }
 
+  /**
+   * 【2.0.0 核心】请求体层面把 buynow 转成送礼
+   * ------------------------------------------------------------
+   * HAR 实证：这个页面的 buynow 是 JS 自己拼 body 发的，
+   * 改 DOM 表单不生效。必须在 fetch/XHR 层面改请求体：
+   *   scenario          parentApproval → gift
+   *   callerApplicationId AMCFamilySafetyWeb → XboxCom
+   *   cssOverride       AMCFamilySafety → XboxCom2NewUI
+   *   parentHostName    account.microsoft.com → www.xbox.com
+   *   products          → 当前商品 + quantity
+   *   加 gifteeEmail / gifteeSenderName / cartId
+   */
   function hardSwapBuynow(bodyStr) {
+    var gc = giftCfg();
+    if (!gc.email) { log('[hard] 未设收码邮箱，保持 parentApproval'); return null; }
+
+    var prod = currentProduct();
+    if (!prod) { log('[hard] 拿不到当前商品'); return null; }
+
     var d = {};
     bodyStr.split('&').forEach(function (p) {
       var i = p.indexOf('='); if (i < 0) return;
       d[unq(p.slice(0, i))] = p.slice(i + 1);
     });
-    if (d['products'] === undefined) return null;
-    var arr; try { arr = JSON.parse(unq(d['products'])); } catch (e) { return null; }
+    if (d['products'] === undefined) { log('[hard] 无 products 字段'); return null; }
+
+    var arr;
+    try { arr = JSON.parse(unq(d['products'])); } catch (e) { log('[hard] products 解析失败'); return null; }
     if (!Array.isArray(arr) || !arr.length) return null;
 
-    // 4.6.2 强制层：tt 来自服务端，没命中就整条覆盖
-    var tt = planTarget();
-    if (!tt) return null;
-    var matches = planMatches('buynow');
-    var n = 0;
-    arr.forEach(function (it) { n += swapOne(it, matches, tt); });
-    if (!n) {
-      arr = [{ productId: tt.productId, skuId: tt.skuId, availabilityId: tt.availabilityId }];
-      n = 1;
-      log('[hard] buynow 首项非游戏，整条覆盖');
-    }
+    // 商品 + availabilityId（优先用页面里的，那是当前真实值）
+    var avail = (arr[0] && arr[0].availabilityId) || prod.availabilityId || '';
+    if (!avail) { log('[hard] 缺 availabilityId'); return null; }
 
+    var item = { productId: prod.productId, skuId: prod.skuId || '0010', availabilityId: avail };
+    if (gc.qty > 1) item.quantity = gc.qty;
+
+    var set = {
+      products: qq(JSON.stringify([item])),
+      scenario: 'gift',
+      callerApplicationId: 'XboxCom',
+      cssOverride: 'XboxCom2NewUI',
+      parentHostName: 'www.xbox.com',
+      suppressGiftThankYouPage: 'true',
+      gifteeEmail: qq(gc.email),
+      gifteeSenderName: qq(gc.sender)
+    };
+    if (giftCart.id) set.cartId = giftCart.id;
+
+    var changed = 0;
     var out = bodyStr.split('&').map(function (p) {
       var i = p.indexOf('='); if (i < 0) return p;
       var k = unq(p.slice(0, i));
-      if (k === 'products') return p.slice(0, i) + '=' + qq(JSON.stringify(arr));
+      if (Object.prototype.hasOwnProperty.call(set, k)) { changed++; return k + '=' + set[k]; }
       return p;
     }).join('&');
-    log('[hard] buynow 强制替换 → ' + tt.productId + '/' + tt.availabilityId + ' 字段:' + n);
+
+    // 补缺失的字段
+    Object.keys(set).forEach(function (k) {
+      if (d[k] === undefined) { out += '&' + k + '=' + set[k]; changed++; }
+    });
+
+    log('[hard] buynow 转送礼 · ' + prod.productId + '/' + avail + ' x' + gc.qty +
+        ' → ' + gc.email + ' · 改动 ' + changed + ' 字段');
+    panelAdd('[hard] 请求体转送礼 · ' + changed + ' 字段 → ' + gc.email);
     return out;
   }
 
@@ -2222,11 +2258,9 @@
     if (!isOrders && !isBuynow) return null;
     // 授权仍要检查，但只提示不拦截（本地测试）
     try { if (!getLicense()) log('[hard] 未授权，仅提示'); } catch (e) {}
-    var r = null;
-    try { r = maybeSwap(url, bodyStr); } catch (e) { log('maybeSwap err', e); }
-    if (r) return r;
-    log('[hard] 精细闸门未命中 → 启用强制替换 ' + (isOrders ? 'orders' : 'buynow'));
-    if (isOrders) return hardSwapOrders(bodyStr);
+    // 2.0：orders 阶段不做处理（否则会破坏子号建单），
+    //      buynow 阶段直接转送礼
+    if (isOrders) { log('[hard] orders 阶段 → 不动'); return null; }
     return hardSwapBuynow(bodyStr);
   }
 
@@ -2428,7 +2462,7 @@
       var mk = targetMarket() || '';
 
       // ---- 转送礼（每步独立保护，任一步失败不中断）----
-      log('[form] 开始转送礼');
+      panelAdd('[form] 开始转送礼');
       var fields = {
         market: market(),
         scenario: 'gift',
@@ -2445,11 +2479,11 @@
       Object.keys(fields).forEach(function (k) {
         try { if (setFormField(form, k, fields[k])) okN++; } catch (e) { log('[form] 字段 ' + k + ' 失败', e.message); }
       });
-      log('[form] 字段设置完成 ' + okN + '/' + Object.keys(fields).length);
+      panelAdd('[form] 字段设置完成 ' + okN + '/' + Object.keys(fields).length);
 
       try {
         if (form.action) form.action = form.action.replace(/([?&]scenario=)[^&]*/, '$1gift');
-        log('[form] action → ' + String(form.action).slice(0, 100));
+        panelAdd('[form] action 已改写');
       } catch (e) { log('[form] action 改写失败', e.message); }
 
       panelAdd('✅ 已转送礼 · ' + item.productId + ' x' + gc.qty + ' → ' + gc.email);
@@ -2644,7 +2678,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v2.3.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v2.4.0', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2722,5 +2756,5 @@
     return _origDel(k);
   };
 
-  log("v2.3.0 injected (gift-code build)");
+  log("v2.4.0 injected (gift-code build)");
 })();
