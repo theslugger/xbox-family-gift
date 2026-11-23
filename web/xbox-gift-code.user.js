@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.4.0
+// @version      2.5.0
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v2.4.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v2.5.0</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -749,6 +749,55 @@
   var KEY_GC = 'xfg_giftCfg';
   var autoBuildTried = false;   // 防止重复建 cart（提到顶部避免 TDZ）
   var KEY_GCART = 'xfg_giftCart';
+
+  /** 当前是否在 buynow 付款页 */
+  function isPayUrl() {
+    try { return /\/store\/purchase\/buynowui\/buynow/i.test(location.href); } catch (e) { return false; }
+  }
+
+  /**
+   * 当前结算市场（两位代码）
+   * 优先级：页面状态 → 配对同步的商品记录 → 页面路径 → US
+   */
+  function market() {
+    try {
+      var P = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
+      var st = P.__STORE_CART_STATE__;
+      if (st && st.appContext && st.appContext.market) {
+        var m0 = String(st.appContext.market).toUpperCase().slice(0, 2);
+        if (m0) return m0;
+      }
+    } catch (e) {}
+
+    var sg = store.get(KEY_GAME);
+    if (sg && sg.market) {
+      var m1 = String(sg.market).toUpperCase().slice(0, 2);
+      if (m1) return m1;
+    }
+
+    try {
+      var mm = (location.pathname || '').match(/\/([a-z]{2})-([a-z]{2})(\/|$)/i);
+      if (mm) return (mm[1] + mm[2]).toUpperCase().slice(0, 2);
+    } catch (e) {}
+
+    var mk = targetMarket();
+    return mk || 'US';
+  }
+
+  /** 当前语言-地区（如 en-us） */
+  function localeOf() {
+    try {
+      var P = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
+      var st = P.__STORE_CART_STATE__;
+      if (st && st.appContext && st.appContext.locale) return st.appContext.locale;
+    } catch (e) {}
+    var map = { AR:'es-ar', US:'en-us', TR:'tr-tr', BR:'pt-br', MX:'es-mx', JP:'ja-jp', GB:'en-gb', DE:'de-de' };
+    try {
+      var mm = (location.pathname || '').match(/\/([a-z]{2})-([a-z]{2})(\/|$)/i);
+      if (mm) return mm[1].toLowerCase() + '-' + mm[2].toUpperCase();
+    } catch (e) {}
+    return map[market()] || 'en-us';
+  }
 
   function giftCfg() {
     var c = store.get(KEY_GC) || {};
@@ -2464,7 +2513,7 @@
       // ---- 转送礼（每步独立保护，任一步失败不中断）----
       panelAdd('[form] 开始转送礼');
       var fields = {
-        market: market(),
+        market: (pageCtx() || {}).market || market(),
         scenario: 'gift',
         callerApplicationId: 'XboxCom',
         cssOverride: 'XboxCom2NewUI',
@@ -2490,7 +2539,7 @@
       notify('✅ 付款页已转送礼', item.productId + ' x' + gc.qty, gc.email);
       try { chargeOnce(item, null); } catch (e) { log('charge err', e); }
       return 1;
-    } catch (e) { log('patchBuynowForm err', e); return 0; }
+    } catch (e) { log('patchBuynowForm err', e); panelAdd('❌ 转送礼异常: ' + e.message); return 0; }
   }
 
   // ============================================================
@@ -2678,7 +2727,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v2.4.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v2.5.0', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2756,5 +2805,5 @@
     return _origDel(k);
   };
 
-  log("v2.4.0 injected (gift-code build)");
+  log("v2.5.0 injected (gift-code build)");
 })();
