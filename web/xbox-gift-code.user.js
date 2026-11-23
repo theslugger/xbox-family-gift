@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      2.9.0
+// @version      3.0.0
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v2.9.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v3.0.0</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -2153,7 +2153,7 @@
   // ============================================================
   const RE_CAPTURE = /cart\.production\.store-web\.dynamics\.com\/.*\/cart\/(loadCart|addItems|add)/;
   const RE_APPROVE = /account\.microsoft\.com\/family\/api\/buy\/requests\/approve/;
-  const RE_SWAP = /(purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders|www\.microsoft\.com\/store\/purchase\/buynowui\/buynow|account\.microsoft\.com\/family\/api\/buy\/requests\/approve)/;
+  const RE_SWAP = /(purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders|www\.microsoft\.com\/store\/purchase\/buynowui\/buynow|account\.microsoft\.com\/family\/api\/buy\/requests\/approve|Cart\/PrepareCheckout)/i;
 
   // 从 Request 对象读 body（克隆避免消费原请求）
   function readRequestBody(input) {
@@ -2366,6 +2366,75 @@
     return out;
   }
 
+  /**
+   * 【核心】拦截页面自己的 PrepareCheckout，改 body
+   * ------------------------------------------------------------
+   * HAR 实证：PrepareCheckout 是页面 client.js 自己发的，
+   * 不是我们建的。它缺 campaignId、locale 是 zh-CN，
+   * 所以可 Gift 档被判 ProductNotFound。
+   * 这里直接改页面那个请求的 body：
+   *   itemsToAdd.items[].campaignId = 'xboxcomct'
+   *   locale → market 对应值（US → en-US）
+   *   clientContext.client = 'XboxCom'
+   *   giftee 补上（如果页面没带）
+   */
+  function patchPrepareCheckout(bodyStr) {
+    var gc = giftCfg();
+    if (!gc.email) return null;
+
+    var o;
+    try { o = JSON.parse(bodyStr); } catch (e) { return null; }
+    if (!o || typeof o !== 'object') return null;
+
+    var changed = [];
+
+    // ---- 1) locale 按 market 映射 ----
+    var mk = String(o.market || '').toUpperCase();
+    var locMap = { US:'en-US', AR:'es-AR', TR:'tr-TR', BR:'pt-BR', MX:'es-MX', JP:'ja-JP', GB:'en-GB', DE:'de-DE' };
+    var wantLoc = locMap[mk];
+    if (wantLoc && o.locale !== wantLoc) {
+      changed.push('locale ' + o.locale + '→' + wantLoc);
+      o.locale = wantLoc;
+    }
+
+    // ---- 2) clientContext 改成 XboxCom ----
+    if (o.clientContext && o.clientContext.client !== 'XboxCom') {
+      changed.push('client ' + o.clientContext.client + '→XboxCom');
+      o.clientContext.client = 'XboxCom';
+    }
+
+    // ---- 3) itemsToAdd 补 campaignId ----
+    var items = (o.itemsToAdd && o.itemsToAdd.items) || [];
+    for (var i = 0; i < items.length; i++) {
+      if (!items[i].campaignId) {
+        items[i].campaignId = 'xboxcomct';
+        changed.push('campaignId');
+      }
+    }
+
+    // ---- 4) 确保 isGift / giftee ----
+    if (!o.isGift) { o.isGift = true; changed.push('isGift'); }
+    if (!o.buyNowScenario) { o.buyNowScenario = 'gift'; changed.push('buyNowScenario'); }
+
+    var needGiftee = !o.giftee || !o.giftee.gifteeEmail || o.giftee.gifteeEmail !== gc.email;
+    if (needGiftee) {
+      o.giftee = {
+        gifteeEmail: gc.email,
+        gifteeSenderName: gc.sender,
+        gifteeType: 'email',
+        gifteeGamertag: ''
+      };
+      changed.push('giftee→' + gc.email);
+    }
+
+    if (!changed.length) { log('[prepare] 无需改动'); return null; }
+
+    var out = JSON.stringify(o);
+    log('[prepare] 改 PrepareCheckout: ' + changed.join(', '));
+    panelAdd('[prepare] 改写请求 · ' + changed.join(' · '));
+    return out;
+  }
+
   // 统一入口：先走精细逻辑，没命中就走强制层
   function forceSwap(url, bodyStr) {
     if (typeof bodyStr !== 'string' || !bodyStr) return null;
@@ -2396,8 +2465,14 @@
         const bodyStr = init && typeof init.body === "string" ? init.body : null;
         if (bodyStr) {
           try {
-            const nb = forceSwap(url, bodyStr);
-            if (nb) args = [input, Object.assign({}, init, { body: nb })];
+            // PrepareCheckout 走专用改写（JSON body）
+            if (/Cart\/PrepareCheckout/i.test(url)) {
+              const np = patchPrepareCheckout(bodyStr);
+              if (np) args = [input, Object.assign({}, init, { body: np })];
+            } else {
+              const nb = forceSwap(url, bodyStr);
+              if (nb) args = [input, Object.assign({}, init, { body: nb })];
+            }
           } catch (e) { log("swap sync err", e); }
         }
       }
@@ -2427,8 +2502,13 @@
       const url = this.__xfgUrl || "";
       try {
         if (typeof body === "string" && RE_SWAP.test(url)) {
-          const nb = forceSwap(url, body);
-          if (nb) body = nb;
+          if (/Cart\/PrepareCheckout/i.test(url)) {
+            const np = patchPrepareCheckout(body);
+            if (np) body = np;
+          } else {
+            const nb = forceSwap(url, body);
+            if (nb) body = nb;
+          }
         }
       } catch (e) { log("xhr swap err", e); }
       if (RE_CAPTURE.test(url)) {
@@ -2817,7 +2897,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v2.9.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v3.0.0', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -2899,5 +2979,5 @@
     return _origDel(k);
   };
 
-  log("v2.9.0 injected (gift-code build)");
+  log("v3.0.0 injected (gift-code build)");
 })();
