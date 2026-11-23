@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.1.0
+// @version      3.2.0
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v3.1.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v3.2.0</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -2153,7 +2153,7 @@
   // ============================================================
   const RE_CAPTURE = /cart\.production\.store-web\.dynamics\.com\/.*\/cart\/(loadCart|addItems|add)/;
   const RE_APPROVE = /account\.microsoft\.com\/family\/api\/buy\/requests\/approve/;
-  const RE_SWAP = /(purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders|www\.microsoft\.com\/store\/purchase\/buynowui\/buynow|account\.microsoft\.com\/family\/api\/buy\/requests\/approve|Cart\/PrepareCheckout)/i;
+  const RE_SWAP = /(purchase\.md\.mp\.microsoft\.com\/v\d+\.\d+\/users\/me\/orders|www\.microsoft\.com\/store\/purchase\/buynowui\/buynow|account\.microsoft\.com\/family\/api\/buy\/requests\/approve|Cart\/PrepareCheckout|Cart\/purchase)/i;
 
   // 从 Request 对象读 body（克隆避免消费原请求）
   function readRequestBody(input) {
@@ -2386,6 +2386,37 @@
    *   body 里改 clientContext 不够，header 才是权威。
    * 同时 accept-language 也要跟 locale 一致。
    */
+  /**
+   * 改 /Cart/purchase 的 body
+   * ------------------------------------------------------------
+   * 它保持页面默认值（zh-CN + AccountMicrosoftCom），
+   * 与刚建的 gift cart 不一致，容易触发风控。
+   * 这里对齐成 XboxCom + 市场语言。
+   */
+  function patchPurchase(bodyStr) {
+    var o;
+    try { o = JSON.parse(bodyStr); } catch (e) { return null; }
+
+    var changed = [];
+    var mk = String(o.market || '').toUpperCase();
+    var locMap = { US:'en-US', AR:'es-AR', TR:'tr-TR', BR:'pt-BR', MX:'es-MX', JP:'ja-JP', GB:'en-GB', DE:'de-DE' };
+    var want = locMap[mk];
+    if (want && o.locale !== want) {
+      changed.push('locale ' + o.locale + '→' + want);
+      o.locale = want;
+    }
+    if (o.clientContext && o.clientContext.client !== 'XboxCom') {
+      changed.push('client ' + o.clientContext.client + '→XboxCom');
+      o.clientContext.client = 'XboxCom';
+    }
+    if (!o.buyNowScenario) { o.buyNowScenario = 'gift'; changed.push('buyNowScenario'); }
+
+    if (!changed.length) return null;
+    log('[purchase] 改 body: ' + changed.join(', '));
+    panelAdd('[purchase] 改写 · ' + changed.join(' · '));
+    return JSON.stringify(o);
+  }
+
   function patchPrepareHeaders(h) {
     try {
       var out = {};
@@ -2525,6 +2556,12 @@
                 const nh = patchPrepareHeaders(init && init.headers);
                 args = [input, Object.assign({}, init, { body: np, headers: nh })];
               }
+            } else if (/Cart\/purchase/i.test(url)) {
+              const pp = patchPurchase(bodyStr);
+              if (pp) {
+                const nh2 = patchPrepareHeaders(init && init.headers);
+                args = [input, Object.assign({}, init, { body: pp, headers: nh2 })];
+              }
             } else {
               const nb = forceSwap(url, bodyStr);
               if (nb) args = [input, Object.assign({}, init, { body: nb })];
@@ -2575,7 +2612,10 @@
       const url = this.__xfgUrl || "";
       try {
         if (typeof body === "string" && RE_SWAP.test(url)) {
-          if (/Cart\/PrepareCheckout/i.test(url)) {
+          if (/Cart\/purchase/i.test(url)) {
+            const pp = patchPurchase(body);
+            if (pp) body = pp;
+          } else if (/Cart\/PrepareCheckout/i.test(url)) {
             const np = patchPrepareCheckout(body);
             if (np) {
               body = np;
@@ -2978,7 +3018,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v3.1.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v3.2.0', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -3060,5 +3100,5 @@
     return _origDel(k);
   };
 
-  log("v3.1.0 injected (gift-code build)");
+  log("v3.2.0 injected (gift-code build)");
 })();
