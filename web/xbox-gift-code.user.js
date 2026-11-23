@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Xbox 家庭组内购送礼（网页版）
 // @namespace    https://github.com/theslugger/xbox-family-gift
-// @version      3.2.0
+// @version      3.3.0
 // @description  子号对当前游戏发起送礼 → 主号批准付款 → 产物为可兑换数字码（支持收件邮箱与数量）
 // @author       theslugger
 // @updateURL    https://raw.githubusercontent.com/theslugger/xbox-family-gift/main/web/xbox-gift-code.user.js
@@ -398,7 +398,7 @@
 
     panelEl.innerHTML =
       '<div id="xfg-hd" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#107C10;cursor:pointer">' +
-        '<span><b>Xbox 送礼码 v3.2.0</b>' + roleTag + '</span>' +
+        '<span><b>Xbox 送礼码 v3.3.0</b>' + roleTag + '</span>' +
         '<span style="font-size:10px;opacity:.8">' + location.host + '</span><span id="xfg-tg" style="margin-left:8px">收起</span>' +
       '</div>' +
       '<div id="xfg-bd" style="padding:10px">' +
@@ -623,6 +623,7 @@
         }
         setPairId(j.data.pairId);
         panelAdd('✅ 已加入子号配对 ' + j.data.pairId + '（组内 ' + j.data.members + ' 个窗口）');
+        panelAdd('[share] 开始拉取商品…');
         notify('配对成功', '配对码 ' + j.data.pairId, '正在拉取子号抓的 ①②');
         // 加入后立刻拉一次，主号马上就能看到子号抓的 ①②
         try { pullShare(true); } catch (e) {}
@@ -635,14 +636,14 @@
   function pushShare() {
     var code = shareCode(), pid = pairId();
     if (!code || !pid) return;
-    var g = store.get(KEY_GAME), t = store.get(KEY_IAP);
-    if (!g && !t) return;
 
     var body = { code: code, pairId: pid };
+    var hasSomething = false;
 
     // 当前商品（不再需要 ①②，直接同步页面商品）
     var prod = currentProduct();
     if (prod && prod.productId) {
+      hasSomething = true;
       body.game = {
         productId: prod.productId,
         skuId: prod.skuId || '0010',
@@ -655,7 +656,14 @@
     var gc = giftCfg();
     if (gc.email) {
       body.giftCfg = { email: gc.email, sender: gc.sender, qty: gc.qty };
+      hasSomething = true;
     }
+
+    // 什么都没得同步就别发请求
+    if (!hasSomething) { log('[share] 无可同步内容（商品/配置都空）'); return; }
+
+    log('[share] 上传: game=' + JSON.stringify(body.game || null) + ' giftCfg=' + JSON.stringify(body.giftCfg || null));
+    panelAdd('[share] 上传商品 ' + ((body.game && body.game.productId) || '无') + ' · 邮箱 ' + ((body.giftCfg && body.giftCfg.email) || '无'));
 
     fetch(SERVER_BASE + '/api/share', {
       method: 'POST',
@@ -692,7 +700,8 @@
 
         if (j.data.game && j.data.game.productId && (!g || g.productId !== j.data.game.productId)) {
           store.set(KEY_GAME, j.data.game); changed = true;
-          log('[share] ← 同步 ① 游戏 ' + j.data.game.productId);
+          log('[share] ← 同步商品 ' + j.data.game.productId + '/' + j.data.game.availabilityId);
+          panelAdd('[share] ← 同步商品 ' + j.data.game.productId);
         }
         if (j.data.iap && j.data.iap.productId && (!t || t.productId !== j.data.iap.productId)) {
           store.set(KEY_IAP, j.data.iap); changed = true;
@@ -730,7 +739,8 @@
           // 同步到商品和邮箱后，若 context 已就绪就自动建 cart
           setTimeout(function () { try { tryAutoBuild(); } catch (e) {} }, 400);
         } else {
-          log('[share] 本地已是最新');
+          log('[share] 本地已是最新 · store=' + JSON.stringify(store.get(KEY_GAME)));
+          panelAdd('[share] 本地已是最新，服务端有: ' + (j.data.game ? j.data.game.productId : '无商品'));
         }
         return j.data;
       })
@@ -847,6 +857,19 @@
       return false;
     }
     store.set(KEY_GC, { email: email, sender: sender, qty: qty });
+
+    // 把当前商品也存进 KEY_GAME，这样配对同步能带上
+    var cp = currentProduct();
+    if (cp && cp.productId) {
+      store.set(KEY_GAME, {
+        productId: cp.productId,
+        skuId: cp.skuId || '0010',
+        availabilityId: cp.availabilityId || '',
+        market: market() || ''
+      });
+      log('[cfg] 已记录当前商品 ' + cp.productId);
+    }
+
     panelAdd('✅ 送礼设置已保存 · ' + email + ' x' + qty);
     try { pushShare(); } catch (e) {}
     refreshPanel();
@@ -3018,7 +3041,7 @@
 
   // 版本自检：控制台 + 面板都能确认当前跑的是哪一版
   try {
-    console.log('%c[XFG] running v3.2.0', 'color:#107C10;font-weight:700',
+    console.log('%c[XFG] running v3.3.0', 'color:#107C10;font-weight:700',
       '| 送礼取码 | PrepareCheckout + scenario=gift');
   } catch (e) {}
 
@@ -3100,5 +3123,5 @@
     return _origDel(k);
   };
 
-  log("v3.2.0 injected (gift-code build)");
+  log("v3.3.0 injected (gift-code build)");
 })();
